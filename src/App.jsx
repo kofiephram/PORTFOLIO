@@ -1,5 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
+import {
+  calculateLanguagePercentages,
+  estimateStackUsage,
+  parseGitHubRepoUrl
+} from './project-utils.js';
+import { isSupabaseConfigured, PROJECT_IMAGES_BUCKET, supabase } from './supabase.js';
 import { 
   Code2, 
   GraduationCap, 
@@ -18,7 +24,11 @@ import {
   CheckCircle2, 
   Layers, 
   Briefcase,
-  Sliders
+  Sliders,
+  LogIn,
+  LogOut,
+  UserPlus,
+  Phone
 } from 'lucide-react';
 
 // Initial pre-populated software engineering projects for Ephraim Kofi
@@ -49,12 +59,305 @@ const INITIAL_PROJECTS = [
   }
 ];
 
+const analyzeProjectStack = async (project) => {
+  const estimatedUsage = estimateStackUsage((project.tags || []).join(','));
+  const repository = parseGitHubRepoUrl(project.link);
+  if (!repository) {
+    return {
+      stackUsage: estimatedUsage,
+      stackUsageSource: 'estimated',
+      stackUsageNote: 'Estimated evenly from the listed technologies. Add a public GitHub repository link to analyze code percentages.'
+    };
+  }
+
+  try {
+    const repositoryPath = repository.split('/').map(encodeURIComponent).join('/');
+    const response = await fetch(`https://api.github.com/repos/${repositoryPath}/languages`, {
+      headers: { Accept: 'application/vnd.github+json' }
+    });
+    if (!response.ok) throw new Error('GitHub language analysis failed.');
+
+    const stackUsage = calculateLanguagePercentages(await response.json());
+    if (stackUsage) {
+      return {
+        stackUsage,
+        stackUsageSource: 'github',
+        stackUsageNote: 'Calculated from the public GitHub repository language breakdown.'
+      };
+    }
+  } catch {
+    return {
+      stackUsage: estimatedUsage,
+      stackUsageSource: 'estimated',
+      stackUsageNote: 'The linked GitHub repository could not be analyzed. Percentages are estimated evenly from the listed technologies.'
+    };
+  }
+
+  return {
+    stackUsage: estimatedUsage,
+    stackUsageSource: 'estimated',
+    stackUsageNote: 'No language data was available. Percentages are estimated evenly from the listed technologies.'
+  };
+};
+
+const DEVICON_SLUGS = {
+  arduino: 'arduino',
+  c: 'c',
+  'c#': 'csharp',
+  'c++': 'cplusplus',
+  css: 'css3',
+  'css3': 'css3',
+  django: 'django',
+  fastapi: 'fastapi',
+  firebase: 'firebase',
+  flask: 'flask',
+  html: 'html5',
+  html5: 'html5',
+  java: 'java',
+  javascript: 'javascript',
+  kotlin: 'kotlin',
+  mongodb: 'mongodb',
+  'microsoft sql server': 'mssql',
+  'next.js': 'nextjs',
+  nextjs: 'nextjs',
+  'node.js': 'nodejs',
+  nodejs: 'nodejs',
+  postgis: 'postgresql',
+  postgresql: 'postgresql',
+  python: 'python',
+  react: 'react',
+  'react native': 'react',
+  reactnative: 'react',
+  sqlite: 'sqlite',
+  'sql server': 'mssql',
+  supabase: 'supabase',
+  'tailwind css': 'tailwindcss',
+  tailwindcss: 'tailwindcss',
+  typescript: 'typescript'
+};
+
+const PROFILE_SKILL_GROUPS = [
+  {
+    title: 'Languages',
+    skills: ['Python', 'JavaScript', 'Kotlin', 'Java', 'C', 'C++', 'C#', 'HTML', 'CSS']
+  },
+  {
+    title: 'Frameworks & APIs',
+    skills: ['React', 'Next.js', 'React Native', 'FastAPI', 'Flask', 'Django', 'Node.js', 'Tailwind CSS', 'REST APIs']
+  },
+  {
+    title: 'Data & Cloud',
+    skills: ['PostgreSQL', 'PostGIS', 'SQLite', 'Microsoft SQL Server', 'MongoDB', 'Supabase', 'Firebase']
+  },
+  {
+    title: 'IT & Tools',
+    skills: ['Networking Fundamentals', 'Hardware Troubleshooting', 'Office 365', 'Git / GitHub', 'Vercel', 'Netlify', 'VS Code', 'Android Studio', 'Arduino / Robotics']
+  }
+];
+
+const StackTechIcon = ({ technology }) => {
+  const [hasIconError, setHasIconError] = useState(false);
+  const slug = DEVICON_SLUGS[technology.toLowerCase()];
+  if (!slug || hasIconError) return <Code2 className="h-4 w-4" />;
+
+  return (
+    <img
+      src={`https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/${slug}/${slug}-original.svg`}
+      alt=""
+      className="h-4 w-4 object-contain"
+      onError={() => setHasIconError(true)}
+    />
+  );
+};
+
+const mapSupabaseProject = project => ({
+  ...project,
+  imageCredits: project.image_credits || [],
+  imagePaths: project.image_paths || [],
+  isSupabaseProject: true
+});
+
+const StackAnalysis = ({ project }) => {
+  const stackUsage = project.stackUsage;
+  const tags = stackUsage ? Object.keys(stackUsage) : project.tags || [];
+  const hasPercentages = tags.length > 0 && tags.every(tag => Number.isFinite(stackUsage?.[tag]));
+
+  return (
+    <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-100">Stack analysis</h3>
+          <p className="mt-1 text-[11px] text-slate-500">
+            {project.stackUsageSource === 'github' ? 'Analyzed from GitHub' : 'Technology mix estimate'}
+          </p>
+        </div>
+        <div className="stack-orbit" aria-label={`${tags.length} technology icons orbiting`}>
+          <div className="stack-orbit-track" />
+          <div className="stack-orbit-center"><Layers className="h-5 w-5" /></div>
+          {tags.map((tag, index) => {
+            const angle = (index * 2 * Math.PI) / Math.max(tags.length, 1) - Math.PI / 2;
+            return (
+              <span
+                key={tag}
+                className="stack-orbit-icon"
+                style={{
+                  '--orbit-x': `${48 * Math.cos(angle)}px`,
+                  '--orbit-y': `${48 * Math.sin(angle)}px`,
+                  animationDelay: `-${index * (12 / Math.max(tags.length, 1))}s`
+                }}
+                title={tag}
+                aria-label={tag}
+              >
+                <StackTechIcon technology={tag} />
+              </span>
+            );
+          })}
+        </div>
+      </div>
+
+      {hasPercentages ? (
+        <div className="mt-4 space-y-3">
+          {tags.map(tag => {
+            const percentage = stackUsage[tag];
+            return (
+              <div key={tag}>
+                <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                  <span className="truncate text-slate-300">{tag}</span>
+                  <span className="shrink-0 font-semibold text-[#1e90ff]">{percentage}%</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+                  <div
+                    className="h-full rounded-full bg-[#1e90ff] transition-all"
+                    style={{ width: `${percentage}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="mt-3 text-xs text-slate-500">Analyzing project stack...</p>
+      )}
+      {project.stackUsageNote && (
+        <p className="mt-3 text-[11px] text-slate-500">{project.stackUsageNote}</p>
+      )}
+    </div>
+  );
+};
+
+const LiveDeveloperProfile = ({ projects }) => {
+  const skillTotals = new Map();
+
+  projects.forEach(project => {
+    const contributions = project.stackUsage
+      ? Object.entries(project.stackUsage)
+      : (project.tags || []).map(tag => [tag, 1]);
+
+    contributions.forEach(([skill, weight]) => {
+      const current = skillTotals.get(skill) || { score: 0, projectCount: 0 };
+      current.score += Number.isFinite(weight) ? weight : 1;
+      current.projectCount += 1;
+      skillTotals.set(skill, current);
+    });
+  });
+
+  const profileSkills = Array.from(skillTotals.entries())
+    .sort((left, right) => right[1].score - left[1].score)
+    .slice(0, 6);
+  const maxSkillScore = Math.max(1, ...profileSkills.map(([, data]) => data.score));
+  const analyzedProjects = projects.filter(project => project.stackUsageSource === 'github').length;
+
+  return (
+    <section aria-labelledby="live-profile-title" className="mx-auto mt-10 max-w-7xl border-t border-slate-800 pt-8">
+      <div className="grid items-center gap-8 rounded-2xl border border-slate-800 bg-slate-900/50 p-6 sm:p-8 lg:grid-cols-[1fr_auto]">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-cyan-400">
+            <Sparkles className="h-3.5 w-3.5" /> Live developer profile
+          </div>
+          <h2 id="live-profile-title" className="mt-3 text-xl font-bold text-white">
+            Growing through project work
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
+            This profile updates from the technologies and repository language analysis of the projects shown above.
+          </p>
+          <div aria-live="polite" className="mt-4 flex flex-wrap gap-2 text-[11px]">
+            <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-slate-300">
+              {projects.length} projects tracked
+            </span>
+            <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-slate-300">
+              {analyzedProjects} GitHub analyses
+            </span>
+          </div>
+
+          <div className="mt-5 grid gap-x-8 gap-y-3 sm:grid-cols-2">
+            {profileSkills.map(([skill, data]) => {
+              const signal = Math.round((data.score / maxSkillScore) * 100);
+              return (
+                <div key={skill}>
+                  <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                    <span className="truncate text-slate-300">{skill}</span>
+                    <span className="shrink-0 text-slate-500">{data.projectCount} project{data.projectCount === 1 ? '' : 's'}</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+                    <div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-indigo-400" style={{ width: `${signal}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex flex-col items-center gap-3">
+          <div className="stack-orbit" aria-label={`${profileSkills.length} project technologies orbiting`}>
+            <div className="stack-orbit-track" />
+            <div className="stack-orbit-center"><Code2 className="h-5 w-5" /></div>
+            {profileSkills.map(([skill], index) => {
+              const angle = (index * 2 * Math.PI) / Math.max(profileSkills.length, 1) - Math.PI / 2;
+              return (
+                <span
+                  key={skill}
+                  className="stack-orbit-icon"
+                  style={{
+                    '--orbit-x': `${48 * Math.cos(angle)}px`,
+                    '--orbit-y': `${48 * Math.sin(angle)}px`,
+                    animationDelay: `-${index * (12 / Math.max(profileSkills.length, 1))}s`
+                  }}
+                  title={skill}
+                  aria-label={skill}
+                >
+                  <StackTechIcon technology={skill} />
+                </span>
+              );
+            })}
+          </div>
+          <span className="text-[10px] uppercase tracking-wider text-slate-500">Project-powered skill orbit</span>
+        </div>
+      </div>
+    </section>
+  );
+};
+
 export default function App() {
   const [projects, setProjects] = useState(INITIAL_PROJECTS);
+  const [isProjectsLoaded, setIsProjectsLoaded] = useState(!isSupabaseConfigured);
+  const [projectStorageNotice, setProjectStorageNotice] = useState(
+    isSupabaseConfigured
+      ? ''
+      : 'Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env.local to publish projects.'
+  );
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminLoginError, setAdminLoginError] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [activeSideDrawer, setActiveSideDrawer] = useState(false);
   const [selectedTag, setSelectedTag] = useState("All");
+  const [isAddingProject, setIsAddingProject] = useState(false);
+  const [imageFileNames, setImageFileNames] = useState({});
+  const [imageUploadError, setImageUploadError] = useState('');
+  const imageFileInputs = useRef({});
+  const imageFiles = useRef({});
+  const projectAnalysisInProgress = useRef(new Set());
 
   // Form state for adding a new project
   const [newProject, setNewProject] = useState({
@@ -71,12 +374,118 @@ export default function App() {
   const [activeImageIndices, setActiveImageIndices] = useState({});
 
   useEffect(() => {
-    const indices = {};
-    projects.forEach(p => {
-      indices[p.id] = 0;
+    let isMounted = true;
+    if (!supabase) {
+      return () => { isMounted = false; };
+    }
+
+    const loadAdminStatus = async user => {
+      if (!isMounted) return;
+      if (!user) {
+        setIsAdmin(false);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('portfolio_admins')
+        .select('admin_email')
+        .ilike('admin_email', user.email || '')
+        .maybeSingle();
+      if (!isMounted) return;
+      if (error) {
+        setIsAdmin(false);
+        setProjectStorageNotice(`Could not check admin access: ${error.message}`);
+        return;
+      }
+      setIsAdmin(Boolean(data));
+    };
+
+    supabase.auth.getSession()
+      .then(({ data, error }) => {
+        if (error) throw error;
+        return loadAdminStatus(data.session?.user);
+      })
+      .catch(error => {
+        if (isMounted) setProjectStorageNotice(`Could not restore the admin session: ${error.message}`);
+      });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      loadAdminStatus(session?.user);
     });
-    setActiveImageIndices(indices);
-  }, [projects]);
+
+    supabase
+      .from('projects')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (error) throw error;
+        if (!isMounted) return;
+        const savedProjects = (data || []).map(mapSupabaseProject);
+        setProjects([...savedProjects, ...INITIAL_PROJECTS]);
+        setProjectStorageNotice('');
+      })
+      .catch(error => {
+        if (isMounted) {
+          setProjects(INITIAL_PROJECTS);
+          setProjectStorageNotice(`Projects could not be loaded from Supabase: ${error.message}`);
+        }
+      })
+      .finally(() => {
+        if (isMounted) setIsProjectsLoaded(true);
+      });
+
+    return () => {
+      isMounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isProjectsLoaded) return;
+    const projectsToAnalyze = projects.filter(project =>
+      !project.stackUsageSource && !projectAnalysisInProgress.current.has(project.id)
+    );
+    if (!projectsToAnalyze.length) return;
+
+    projectsToAnalyze.forEach(project => projectAnalysisInProgress.current.add(project.id));
+    Promise.all(projectsToAnalyze.map(async project => [
+      project.id,
+      await analyzeProjectStack(project)
+    ]))
+      .then(analyses => {
+        const analysisById = new Map(analyses);
+        setProjects(previousProjects => previousProjects.map(project => {
+          const analysis = analysisById.get(project.id);
+          return analysis && !project.stackUsageSource ? { ...project, ...analysis } : project;
+        }));
+      })
+      .finally(() => {
+        projectsToAnalyze.forEach(project => projectAnalysisInProgress.current.delete(project.id));
+      });
+  }, [projects, isProjectsLoaded]);
+
+  const handleScreenshotFileChange = (field, event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!allowedTypes.includes(file.type)) {
+      setImageUploadError('Choose a JPG, PNG, WebP, or GIF image.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setImageUploadError('Each image must be 5 MB or smaller.');
+      return;
+    }
+
+    setImageUploadError('');
+    const previousPreview = newProject[field];
+    if (previousPreview) URL.revokeObjectURL(previousPreview);
+    imageFiles.current[field] = file;
+    setNewProject(prev => ({ ...prev, [field]: URL.createObjectURL(file) }));
+    setImageFileNames(prev => ({ ...prev, [field]: file.name }));
+  };
 
   const handleNextImage = (projectId, totalImages) => {
     setActiveImageIndices(prev => ({
@@ -92,40 +501,159 @@ export default function App() {
     }));
   };
 
-  const handleAddProject = (e) => {
+  const handleAddProject = async (e) => {
     e.preventDefault();
-    if (!newProject.title || !newProject.description) return;
-
-    // Collect valid image URLs or provide fallback defaults
-    const imagesList = [];
-    if (newProject.img1) imagesList.push(newProject.img1);
-    if (newProject.img2) imagesList.push(newProject.img2);
-    if (newProject.img3) imagesList.push(newProject.img3);
-
-    if (imagesList.length === 0) {
-      imagesList.push("https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=1000&q=80");
+    if (isAddingProject) return;
+    if (!supabase || !isAdmin) {
+      setProjectStorageNotice('Sign in with a portfolio admin account before publishing projects.');
+      return;
+    }
+    if (!newProject.title.trim() || !newProject.description.trim()) {
+      setProjectStorageNotice('Enter a project title and description before publishing.');
+      return;
     }
 
-    const tagArray = newProject.tags
-      ? newProject.tags.split(',').map(t => t.trim()).filter(Boolean)
-      : ["Software Engineering"];
+    const tagArray = Array.from(new Set(
+      newProject.tags.split(',').map(tag => tag.trim()).filter(Boolean)
+    ));
+    if (!tagArray.length) {
+      setProjectStorageNotice('Add at least one technology to the project stack.');
+      return;
+    }
+    const files = ['img1', 'img2', 'img3']
+      .map(field => imageFiles.current[field])
+      .filter(Boolean);
+    if (!files.length) {
+      setImageUploadError('Upload at least one project screenshot to publish it permanently.');
+      return;
+    }
 
-    const createdProject = {
-      id: Date.now(),
-      title: newProject.title,
-      description: newProject.description,
-      link: newProject.link || "#",
-      tags: tagArray,
-      images: imagesList
-    };
+    setIsAddingProject(true);
+    setImageUploadError('');
+    setProjectStorageNotice('');
+    const uploadedPaths = [];
 
-    setProjects([createdProject, ...projects]);
-    setNewProject({ title: '', description: '', link: '', img1: '', img2: '', img3: '', tags: '' });
-    setIsModalOpen(false);
+    try {
+      const projectId = crypto.randomUUID();
+      const images = [];
+      for (const file of files) {
+        const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `${projectId}/${crypto.randomUUID()}-${safeFileName}`;
+        const { error: uploadError } = await supabase.storage
+          .from(PROJECT_IMAGES_BUCKET)
+          .upload(path, file, { contentType: file.type, cacheControl: '31536000' });
+        if (uploadError) throw uploadError;
+
+        uploadedPaths.push(path);
+        const { data } = supabase.storage.from(PROJECT_IMAGES_BUCKET).getPublicUrl(path);
+        images.push(data.publicUrl);
+      }
+
+      const { data, error } = await supabase
+        .from('projects')
+        .insert({
+          id: projectId,
+          title: newProject.title.trim(),
+          description: newProject.description.trim(),
+          link: newProject.link.trim(),
+          tags: tagArray,
+          images,
+          image_paths: uploadedPaths
+        })
+        .select()
+        .single();
+      if (error) throw error;
+
+      const createdProject = mapSupabaseProject(data);
+      setProjects(prev => [createdProject, ...prev]);
+      Object.values(newProject).forEach(value => {
+        if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
+      });
+      imageFiles.current = {};
+      setNewProject({ title: '', description: '', link: '', img1: '', img2: '', img3: '', tags: '' });
+      setImageFileNames({});
+      setIsModalOpen(false);
+    } catch (error) {
+      let cleanupNotice = '';
+      if (uploadedPaths.length) {
+        const { error: cleanupError } = await supabase.storage
+          .from(PROJECT_IMAGES_BUCKET)
+          .remove(uploadedPaths);
+        if (cleanupError) cleanupNotice = ` Image cleanup also failed: ${cleanupError.message}`;
+      }
+      setProjectStorageNotice(`Could not publish the project: ${error.message || 'Unknown Supabase error.'}${cleanupNotice}`);
+    } finally {
+      setIsAddingProject(false);
+    }
   };
 
-  const handleDeleteProject = (id) => {
-    setProjects(projects.filter(p => p.id !== id));
+  const handleOpenProjectManager = () => {
+    if (!isSupabaseConfigured) {
+      setProjectStorageNotice('Configure Supabase in .env.local before publishing projects.');
+      return;
+    }
+    if (isAdmin) {
+      setIsModalOpen(true);
+      return;
+    }
+    setAdminLoginError('');
+    setIsAdminLoginOpen(true);
+  };
+
+  const handleGoogleLogin = async () => {
+    if (!supabase) return;
+    setAdminLoginError('');
+
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: window.location.origin }
+      });
+      if (error) throw error;
+    } catch (error) {
+      setAdminLoginError(error.message || 'Google sign-in failed.');
+    }
+  };
+
+  const handleAdminLogout = async () => {
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setProjectStorageNotice(`Could not sign out: ${error.message}`);
+      return;
+    }
+    setIsAdmin(false);
+  };
+
+  const handleDeleteProject = async project => {
+    if (!supabase || !isAdmin || !project.isSupabaseProject) return;
+    const { error } = await supabase.from('projects').delete().eq('id', project.id);
+    if (error) {
+      setProjectStorageNotice(`Could not delete the project: ${error.message}`);
+      return;
+    }
+
+    setProjects(prev => prev.filter(item => item.id !== project.id));
+    if (project.imagePaths?.length) {
+      const { error: storageError } = await supabase.storage
+        .from(PROJECT_IMAGES_BUCKET)
+        .remove(project.imagePaths);
+      if (storageError) {
+        setProjectStorageNotice(`Project deleted, but its stored images could not be removed: ${storageError.message}`);
+        return;
+      }
+    }
+    setProjectStorageNotice('');
+  };
+
+  const resetProjectForm = () => {
+    Object.values(newProject).forEach(value => {
+      if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
+    });
+    imageFiles.current = {};
+    setNewProject({ title: '', description: '', link: '', img1: '', img2: '', img3: '', tags: '' });
+    setImageFileNames({});
+    setImageUploadError('');
   };
 
   const allTags = ["All", ...Array.from(new Set(projects.flatMap(p => p.tags)))];
@@ -142,31 +670,47 @@ export default function App() {
 
       {/* Modern Fixed Navigation Bar */}
       <nav className="sticky top-0 pt-[0.33cm] z-40 backdrop-blur-md bg-slate-950/80 border-b border-slate-800/80">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 md:px-14">
           <div className="flex items-center justify-between h-16">
             <a href="#home" className="flex items-center gap-2 font-bold text-xl tracking-tight hover:opacity-90 transition">
               <div className="p-2 rounded-lg bg-gradient-to-tr from-cyan-500 to-indigo-600 text-white shadow-lg shadow-cyan-500/20">
                 <Code2 className="w-5 h-5" />
               </div>
-              <span className="bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
+              <span className="bg-gradient-to-r from-white via-cyan-100 to-cyan-300 bg-clip-text text-transparent font-bold">
                 Ephraim Kofi
               </span>
             </a>
 
             {/* Desktop Navigation Links */}
-            <div className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-300">
+            <div className="hidden md:ml-auto md:flex md:items-center md:justify-end gap-4 lg:gap-8 text-sm font-medium text-slate-300">
               <a href="#home" className="hover:text-cyan-400 transition-colors">Home</a>
               <a href="#about" className="hover:text-cyan-400 transition-colors">About</a>
               <a href="#projects" className="hover:text-cyan-400 transition-colors">Projects</a>
               <a href="#contact" className="hover:text-cyan-400 transition-colors">Contact</a>
               
               <button 
-                onClick={() => setIsModalOpen(true)}
+                onClick={handleOpenProjectManager}
+                disabled={!isProjectsLoaded}
                 className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-medium shadow-md shadow-cyan-500/20 hover:shadow-cyan-500/40 hover:scale-[1.02] active:scale-[0.98] transition-all"
               >
-                <PlusCircle className="w-4 h-4" />
-                Add Project
+                {isAdmin ? <PlusCircle className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
+                {isAdmin ? 'Add Project' : 'Admin Login'}
               </button>
+              {isAdmin && (
+                <button onClick={handleAdminLogout} className="text-xs text-slate-400 hover:text-white">
+                  <LogOut className="mr-1 inline h-3 w-3" /> Sign out
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  type="button"
+                  disabled
+                  title="This portfolio is limited to one administrator."
+                  className="inline-flex cursor-not-allowed items-center gap-1 text-xs text-slate-400 opacity-40"
+                >
+                  <UserPlus className="h-3.5 w-3.5" /> Add admin
+                </button>
+              )}
             </div>
 
             {/* Mobile Side Feature Drawer Toggle */}
@@ -220,12 +764,28 @@ export default function App() {
               Contact
             </a>
             <button 
-              onClick={() => { setIsMobileMenuOpen(false); setIsModalOpen(true); }}
+              onClick={() => { setIsMobileMenuOpen(false); handleOpenProjectManager(); }}
+              disabled={!isProjectsLoaded}
               className="w-full mt-2 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-medium shadow-md shadow-cyan-500/20"
             >
-              <PlusCircle className="w-4 h-4" />
-              Add New Project
+              {isAdmin ? <PlusCircle className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
+              {isAdmin ? 'Add New Project' : 'Admin Login'}
             </button>
+            {isAdmin && (
+              <button onClick={handleAdminLogout} className="w-full py-2 text-sm text-slate-400 hover:text-white">
+                <LogOut className="mr-1 inline h-3 w-3" /> Sign out
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                type="button"
+                disabled
+                title="This portfolio is limited to one administrator."
+                className="w-full cursor-not-allowed py-2 text-sm text-slate-400 opacity-40"
+              >
+                <UserPlus className="mr-1 inline h-4 w-4" /> Add admin
+              </button>
+            )}
           </div>
         )}
       </nav>
@@ -251,14 +811,14 @@ export default function App() {
                   <span className="w-2.5 h-2.5 rounded-full bg-red-500/80 inline-block" />
                   <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/80 inline-block" />
                   <span className="w-2.5 h-2.5 rounded-full bg-green-500/80 inline-block" />
-                  <span className="ml-2 text-[10px] text-slate-400">ephraim@uz-dev-box:~</span>
+                  <span className="ml-2 text-[10px] text-slate-400">ephraim@harare:~</span>
                 </div>
-                <p className="text-emerald-400">$ status --student</p>
-                <p className="text-slate-400">Software Engineering undergrad @ UZ</p>
-                <p className="text-cyan-400 mt-2">$ list --skills</p>
-                <p className="text-slate-300">Python, React, Node.js, C++, Web Architecture</p>
+                <p className="text-emerald-400">$ status --internship</p>
+                <p className="text-slate-400">Part 3 Software Engineering @ UZ</p>
+                <p className="text-cyan-400 mt-2">$ list --focus</p>
+                <p className="text-slate-300">Full-stack, databases, IT support & networking</p>
                 <p className="text-purple-400 mt-2">$ build --active-projects</p>
-                <p className="text-amber-300">{projects.length} showcase items loaded</p>
+                <p className="text-amber-300">{projects.length} project profiles loaded</p>
               </div>
 
               {/* Quick Metrics */}
@@ -269,12 +829,12 @@ export default function App() {
                   <span className="text-xs px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-medium">UZ Harare</span>
                 </div>
                 <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 flex justify-between items-center">
-                  <span className="text-sm text-slate-300">Major</span>
-                  <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-medium">BSc Software Eng.</span>
+                  <span className="text-sm text-slate-300">Study</span>
+                  <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-medium">BSc Hons · Part 3</span>
                 </div>
                 <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800 flex justify-between items-center">
-                  <span className="text-sm text-slate-300">Focus</span>
-                  <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">Full-Stack & Systems</span>
+                  <span className="text-sm text-slate-300">Location</span>
+                  <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">Harare, Zimbabwe</span>
                 </div>
               </div>
             </div>
@@ -297,18 +857,18 @@ export default function App() {
           <div className="max-w-4xl mx-auto text-center space-y-8">
             <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900/90 border border-cyan-500/30 text-cyan-400 text-xs sm:text-sm font-medium shadow-xl shadow-cyan-500/5 backdrop-blur-md">
               <Sparkles className="w-4 h-4 animate-pulse text-cyan-400" />
-              <span>Software Engineering Student @ University of Zimbabwe</span>
+              <span>Part 3 Software Engineering Student · IT Intern Candidate</span>
             </div>
 
             <h1 className="text-4xl sm:text-6xl lg:text-7xl font-extrabold tracking-tight">
-              Crafting Digital Solutions with{' '}
+              Full-Stack Development &{' '}
               <span className="bg-gradient-to-r from-cyan-400 via-teal-300 to-indigo-400 bg-clip-text text-transparent">
-                Clean Architecture & Code
+                IT Systems Support
               </span>
             </h1>
 
             <p className="text-base sm:text-xl text-slate-400 max-w-2xl mx-auto leading-relaxed">
-              Hi, I'm <strong className="text-slate-200">Ephraim Kofi</strong>. I build responsive web systems, scalable software, and modern digital platforms focused on real-world practical utility.
+              Hi, I'm <strong className="text-slate-200">Ephraim Kofi</strong>, a third-year BSc Honours Software Engineering student at the University of Zimbabwe and an IT internship candidate. I build full-stack and cross-platform applications, work with databases and APIs, and bring hands-on hardware troubleshooting and networking fundamentals.
             </p>
 
             <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
@@ -320,17 +880,18 @@ export default function App() {
                 Explore My Projects
               </a>
               <button 
-                onClick={() => setIsModalOpen(true)}
+                onClick={handleOpenProjectManager}
+                disabled={!isProjectsLoaded}
                 className="px-7 py-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 font-semibold shadow-md hover:-translate-y-0.5 transition-all flex items-center gap-2"
               >
-                <PlusCircle className="w-5 h-5 text-cyan-400" />
-                Add New Software Work
+                {isAdmin ? <PlusCircle className="w-5 h-5 text-cyan-400" /> : <LogIn className="w-5 h-5 text-cyan-400" />}
+                {isAdmin ? 'Add New Software Work' : 'Admin Login'}
               </button>
             </div>
 
             <div className="pt-8 border-t border-slate-900 flex flex-wrap justify-center items-center gap-2 sm:gap-3 text-xs sm:text-sm text-slate-400">
               <span className="text-slate-500 font-semibold mr-2 uppercase tracking-wider text-xs">Core Tech:</span>
-              {['JavaScript / React', 'Python & FastAPI', 'Node.js', 'PostgreSQL / MongoDB', 'Tailwind CSS', 'Git & CI/CD'].map((tech, idx) => (
+                {['React / Next.js', 'React Native / Kotlin', 'Python / FastAPI / Flask', 'PostgreSQL / PostGIS / SQLite', 'Supabase / Firebase', 'Systems & Network Support'].map((tech, idx) => (
                 <span key={idx} className="px-3 py-1.5 rounded-lg bg-slate-900/80 border border-slate-800 text-slate-300">
                   {tech}
                 </span>
@@ -348,11 +909,11 @@ export default function App() {
               </div>
               
               <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-white">
-                Engineering Software for Impact & Performance
+                Software, Data & Reliable IT Support
               </h2>
 
               <p className="text-slate-300 leading-relaxed">
-                As a passionate Software Engineering undergraduate at the <strong>University of Zimbabwe (UZ)</strong>, I focus on synthesizing robust web development techniques with software design patterns. My focus centers on full-stack architecture, API development, and data-driven client applications.
+                I am a <strong>Part 3 BSc Honours Software Engineering student at the University of Zimbabwe</strong> (2024–present), seeking an IT internship in software development, IT support, systems administration, data management, or digital services. I have built web and mobile applications, database-backed services, and hardware projects, with a practical focus on solving local business and community needs.
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
@@ -360,13 +921,13 @@ export default function App() {
                   <div className="flex items-center gap-2 text-cyan-400 font-semibold text-sm">
                     <CheckCircle2 className="w-4 h-4" /> University of Zimbabwe
                   </div>
-                  <p className="text-xs text-slate-400">Department of Computer Science & Engineering</p>
+                  <p className="text-xs text-slate-400">BSc Honours Software Engineering · Part 3 · Mt Pleasant, Harare</p>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1">
                   <div className="flex items-center gap-2 text-indigo-400 font-semibold text-sm">
-                    <Layers className="w-4 h-4" /> Project Methodology
+                    <Layers className="w-4 h-4" /> Internship Focus
                   </div>
-                  <p className="text-xs text-slate-400">Agile, Modular Design & Clean Code Practices</p>
+                  <p className="text-xs text-slate-400">Software · IT support · Systems · Data</p>
                 </div>
               </div>
             </div>
@@ -378,34 +939,25 @@ export default function App() {
               </h3>
 
               <div className="space-y-4">
-                <div>
-                  <div className="flex justify-between text-xs text-slate-400 mb-1">
-                    <span>Frontend Engineering (React / Next.js)</span>
-                    <span className="text-cyan-400 font-bold">90%</span>
+                {PROFILE_SKILL_GROUPS.map(group => (
+                  <div key={group.title}>
+                    <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-cyan-400">{group.title}</h4>
+                    <div className="flex flex-wrap gap-1.5">
+                      {group.skills.map(skill => (
+                        <span key={skill} className="rounded-md border border-slate-800 bg-slate-950 px-2 py-1 text-[10px] text-slate-300">
+                          {skill}
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                  <div className="w-full bg-slate-800 rounded-full h-2">
-                    <div className="bg-cyan-400 h-2 rounded-full w-[90%]" />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-xs text-slate-400 mb-1">
-                    <span>Backend & APIs (Node / Python)</span>
-                    <span className="text-indigo-400 font-bold">85%</span>
-                  </div>
-                  <div className="w-full bg-slate-800 rounded-full h-2">
-                    <div className="bg-indigo-400 h-2 rounded-full w-[85%]" />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-xs text-slate-400 mb-1">
-                    <span>Database Design (SQL & NoSQL)</span>
-                    <span className="text-emerald-400 font-bold">80%</span>
-                  </div>
-                  <div className="w-full bg-slate-800 rounded-full h-2">
-                    <div className="bg-emerald-400 h-2 rounded-full w-[80%]" />
-                  </div>
+                ))}
+                <div className="border-t border-slate-800 pt-3">
+                  <h4 className="text-[11px] font-semibold uppercase tracking-wide text-indigo-400">Certifications</h4>
+                  <p className="mt-1 text-xs text-slate-400">ICDL Africa: Computer Essentials, Word, Excel & PowerPoint · 27 Oct 2024</p>
+                  <p className="mt-1 text-xs text-slate-400">Coding & Robotics, Abedai Technologies · 26 Sep 2026</p>
+                  <p className="mt-3 border-t border-slate-800 pt-3 text-xs leading-relaxed text-slate-400">
+                    Live deployments on Netlify and Vercel, cross-platform mobile development, and practical hardware and robotics projects.
+                  </p>
                 </div>
               </div>
             </div>
@@ -425,14 +977,18 @@ export default function App() {
             </div>
 
             <button
-              onClick={() => setIsModalOpen(true)}
+              onClick={handleOpenProjectManager}
+              disabled={!isProjectsLoaded}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 border border-cyan-500/40 text-cyan-400 font-medium hover:bg-cyan-500/10 transition shadow-lg shadow-cyan-500/5 self-start md:self-auto"
             >
-              <PlusCircle className="w-4 h-4" />
-              Add Project Link & Images
+              {isAdmin ? <PlusCircle className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
+              {isAdmin ? 'Add Project Link & Images' : 'Admin Login'}
             </button>
           </div>
 
+          {projectStorageNotice && (
+            <p role="status" className="text-sm text-amber-300">{projectStorageNotice}</p>
+          )}
           <div className="flex flex-wrap gap-2">
             {allTags.map((tag) => (
               <button
@@ -470,15 +1026,28 @@ export default function App() {
                           e.target.src = "https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=1000&q=80";
                         }}
                       />
+                      {project.imageCredits?.[currentImageIndex]?.sourceUrl && (
+                        <a
+                          href={project.imageCredits[currentImageIndex].sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={`Image by ${project.imageCredits[currentImageIndex].creator} · ${project.imageCredits[currentImageIndex].license}`}
+                          className="absolute bottom-3 left-3 z-10 max-w-[70%] truncate rounded bg-slate-950/80 px-2 py-1 text-[10px] text-slate-200 hover:text-cyan-300"
+                        >
+                          {project.imageCredits[currentImageIndex].creator} · {project.imageCredits[currentImageIndex].license}
+                        </a>
+                      )}
 
                       <div className="absolute top-3 right-3 flex items-center gap-2">
-                        <button
-                          onClick={() => handleDeleteProject(project.id)}
-                          className="p-1.5 rounded-lg bg-slate-950/70 text-slate-400 hover:text-red-400 border border-slate-800 backdrop-blur-md transition"
-                          title="Delete Project"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {isAdmin && project.isSupabaseProject && (
+                          <button
+                            onClick={() => handleDeleteProject(project)}
+                            className="p-1.5 rounded-lg bg-slate-950/70 text-slate-400 hover:text-red-400 border border-slate-800 backdrop-blur-md transition"
+                            title="Delete Project"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
 
                       {hasMultipleImages && (
@@ -543,6 +1112,7 @@ export default function App() {
                           </span>
                         ))}
                       </div>
+                      <StackAnalysis project={project} />
                     </div>
                   </div>
 
@@ -586,14 +1156,21 @@ export default function App() {
 
             <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
               <a 
-                href="mailto:ephraim.kofi@example.com"
+                href="mailto:kofiephram@gmail.com"
                 className="px-6 py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold shadow-lg shadow-cyan-500/20 transition flex items-center gap-2"
               >
                 <Mail className="w-4 h-4" />
                 Email Ephraim
               </a>
+              <a
+                href="tel:+263777536989"
+                className="px-6 py-3 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 font-medium transition flex items-center gap-2"
+              >
+                <Phone className="w-4 h-4" />
+                Call Ephraim
+              </a>
               <a 
-                href="https://github.com" 
+                href="https://github.com/kofiephram"
                 target="_blank" 
                 rel="noreferrer"
                 className="px-6 py-3 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-200 font-medium transition flex items-center gap-2"
@@ -610,14 +1187,15 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <GraduationCap className="w-4 h-4 text-cyan-400" />
-            <span>Ephraim Kofi • Software Engineering @ University of Zimbabwe</span>
+            <span>Ephraim Kofi · Part 3 Software Engineering · Harare, Zimbabwe</span>
           </div>
           <div className="flex items-center gap-4">
-            <a href="https://github.com" target="_blank" rel="noreferrer" className="hover:text-cyan-400 transition">GitHub</a>
-            <a href="https://linkedin.com" target="_blank" rel="noreferrer" className="hover:text-cyan-400 transition">LinkedIn</a>
-            <a href="mailto:ephraim.kofi@example.com" className="hover:text-cyan-400 transition">Email</a>
+            <a href="https://github.com/kofiephram" target="_blank" rel="noreferrer" className="hover:text-cyan-400 transition">GitHub</a>
+            <a href="mailto:kofiephram@gmail.com" className="hover:text-cyan-400 transition">Email</a>
+            <a href="tel:+263777536989" className="hover:text-cyan-400 transition">Call</a>
           </div>
         </div>
+        <LiveDeveloperProfile projects={projects} />
       </footer>
 
       {/* ADD PROJECT MODAL */}
@@ -630,12 +1208,17 @@ export default function App() {
                 Add New Software Project
               </div>
               <button 
-                onClick={() => setIsModalOpen(false)}
+                onClick={() => { resetProjectForm(); setIsModalOpen(false); }}
+                disabled={isAddingProject}
                 className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {projectStorageNotice && (
+              <p role="alert" className="text-sm text-amber-300">{projectStorageNotice}</p>
+            )}
 
             <form onSubmit={handleAddProject} className="space-y-4 text-left">
               <div>
@@ -681,60 +1264,104 @@ export default function App() {
 
               <div className="space-y-2">
                 <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                  Project Preview Screenshots (2 to 3 Image URLs)
+                  Project Preview Screenshots (1 to 3 images) *
                 </label>
-                <input 
-                  type="url" 
-                  placeholder="Image 1 URL (Primary screenshot)"
-                  value={newProject.img1}
-                  onChange={(e) => setNewProject({...newProject, img1: e.target.value})}
-                  className="w-full px-4 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 text-xs transition"
-                />
-                <input 
-                  type="url" 
-                  placeholder="Image 2 URL (Feature preview)"
-                  value={newProject.img2}
-                  onChange={(e) => setNewProject({...newProject, img2: e.target.value})}
-                  className="w-full px-4 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 text-xs transition"
-                />
-                <input 
-                  type="url" 
-                  placeholder="Image 3 URL (Dashboard / UI view)"
-                  value={newProject.img3}
-                  onChange={(e) => setNewProject({...newProject, img3: e.target.value})}
-                  className="w-full px-4 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 text-xs transition"
-                />
+                <p className="text-[11px] text-slate-500">
+                  Selected images are uploaded to Supabase Storage. JPG, PNG, WebP, or GIF; maximum 5 MB each.
+                </p>
+                {[
+                  { field: 'img1', label: 'Choose primary screenshot' },
+                  { field: 'img2', label: 'Choose feature preview' },
+                  { field: 'img3', label: 'Choose dashboard / UI view' }
+                ].map(({ field, label }, index) => (
+                  <div key={field} className="space-y-1">
+                    <div className="flex items-center gap-3">
+                      <input
+                        ref={node => { imageFileInputs.current[field] = node; }}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        className="hidden"
+                        aria-label={`Choose image ${index + 1}`}
+                        onChange={(e) => handleScreenshotFileChange(field, e)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => imageFileInputs.current[field]?.click()}
+                        className="inline-flex min-w-0 items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-left text-xs text-cyan-300 hover:bg-slate-700 transition"
+                        aria-label={label}
+                        title="Choose an image from your files"
+                      >
+                        <PlusCircle className="h-4 w-4 shrink-0" />
+                        <span className="truncate">{imageFileNames[field] || label}</span>
+                      </button>
+                      {newProject[field] && (
+                        <img src={newProject[field]} alt={`Preview ${index + 1}`} className="h-12 w-20 rounded-lg object-cover" />
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {imageUploadError && (
+                  <p role="alert" className="text-xs text-red-400">{imageUploadError}</p>
+                )}
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                  Tech Stack Tags (Comma separated)
+                  Tech Stack (Comma separated) *
                 </label>
                 <input 
                   type="text" 
+                  required
                   placeholder="React, Tailwind CSS, Python, Node.js"
                   value={newProject.tags}
-                  onChange={(e) => setNewProject({...newProject, tags: e.target.value})}
+                  onChange={(e) => setNewProject({ ...newProject, tags: e.target.value })}
                   className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 text-sm transition"
                 />
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Public GitHub repositories are analyzed automatically; otherwise the chart estimates an even split from these tags.
+                </p>
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
                 <button 
                   type="button" 
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={() => { resetProjectForm(); setIsModalOpen(false); }}
+                  disabled={isAddingProject}
                   className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm font-medium transition"
                 >
                   Cancel
                 </button>
                 <button 
                   type="submit" 
+                  disabled={isAddingProject || !isProjectsLoaded}
                   className="px-6 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm shadow-lg shadow-cyan-500/20 transition"
                 >
-                  Save & Publish Project
+                  {isAddingProject ? 'Uploading & publishing...' : 'Save & Publish Project'}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {isAdminLoginOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md">
+          <div className="w-full max-w-md space-y-5 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <h2 className="flex items-center gap-2 text-lg font-bold text-cyan-400">
+                <LogIn className="h-5 w-5" /> Portfolio Admin
+              </h2>
+              <button type="button" onClick={() => setIsAdminLoginOpen(false)} className="text-slate-400 hover:text-white" aria-label="Close admin login">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <p className="text-sm text-slate-400">
+              Sign in with the single Google account configured as this portfolio's administrator.
+            </p>
+            {adminLoginError && <p role="alert" className="text-sm text-red-400">{adminLoginError}</p>}
+            <button type="button" onClick={handleGoogleLogin} className="w-full rounded-xl bg-cyan-500 px-4 py-2.5 font-bold text-slate-950 hover:bg-cyan-400">
+              Continue with Google
+            </button>
           </div>
         </div>
       )}
