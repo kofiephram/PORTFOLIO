@@ -6,15 +6,79 @@ create table if not exists public.portfolio_admins (
   created_at timestamptz not null default now()
 );
 
+drop policy if exists "Admins can view their own portfolio role" on public.portfolio_admins;
+
+do $$
+declare
+  old_primary_key text;
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'portfolio_admins'
+      and column_name = 'user_id'
+  ) then
+    delete from public.portfolio_admins;
+
+    select conname
+      into old_primary_key
+      from pg_constraint
+      where conrelid = 'public.portfolio_admins'::regclass
+        and contype = 'p';
+    if old_primary_key is not null then
+      execute format('alter table public.portfolio_admins drop constraint %I', old_primary_key);
+    end if;
+    alter table public.portfolio_admins alter column user_id drop not null;
+  end if;
+end
+$$;
+
+alter table public.portfolio_admins add column if not exists singleton boolean;
+alter table public.portfolio_admins add column if not exists admin_email text;
+alter table public.portfolio_admins alter column singleton set default true;
+update public.portfolio_admins set singleton = true where singleton is null;
+alter table public.portfolio_admins alter column singleton set not null;
+update public.portfolio_admins set admin_email = 'kofiephram@gmail.com' where admin_email is null;
+alter table public.portfolio_admins alter column admin_email set not null;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.portfolio_admins'::regclass and contype = 'p'
+  ) then
+    alter table public.portfolio_admins add constraint portfolio_admins_pkey primary key (singleton);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.portfolio_admins'::regclass
+      and conname = 'portfolio_admins_singleton_check'
+  ) then
+    alter table public.portfolio_admins
+      add constraint portfolio_admins_singleton_check check (singleton);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.portfolio_admins'::regclass
+      and conname = 'portfolio_admins_admin_email_key'
+  ) then
+    alter table public.portfolio_admins
+      add constraint portfolio_admins_admin_email_key unique (admin_email);
+  end if;
+end
+$$;
+
 insert into public.portfolio_admins (singleton, admin_email)
-values (true, 'replace-with-your-google-email@example.com')
+values (true, 'kofiephram@gmail.com')
 on conflict (singleton) do nothing;
 
 alter table public.portfolio_admins enable row level security;
 revoke all on public.portfolio_admins from anon, authenticated;
 grant select on public.portfolio_admins to authenticated;
 
-drop policy if exists "Admins can view their own portfolio role" on public.portfolio_admins;
 create policy "Admins can view their own portfolio role"
   on public.portfolio_admins
   for select

@@ -7,7 +7,7 @@ The portfolio keeps its built-in showcase projects in the app and stores newly p
 1. Create a Supabase project.
 2. Open **SQL Editor**, run [`supabase/schema.sql`](./supabase/schema.sql).
 3. In the **Authentication → Providers** settings, enable Google and configure its OAuth client credentials. Add your local and deployed site URLs to Supabase's allowed redirect URLs.
-4. In SQL Editor, set the one allowed administrator to your Google account email:
+4. The schema seeds the single admin slot with `kofiephram@gmail.com`. If that is not the email on your Google account, update the slot in SQL Editor:
 
    ```sql
    update public.portfolio_admins
