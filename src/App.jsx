@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { analyzeGitHubRepoLanguages } from './project-utils.js';
-import { isSupabaseConfigured, PROJECT_IMAGES_BUCKET, supabase } from './supabase.js';
+import {
+  isSupabaseConfigured,
+  oauthCallbackErrorMessage,
+  PROJECT_IMAGES_BUCKET,
+  supabase
+} from './supabase.js';
 import { 
   Code2, 
   GraduationCap, 
@@ -28,6 +33,7 @@ import {
 } from 'lucide-react';
 
 const INITIAL_PROJECTS = [];
+const PROJECT_FORM_AFTER_LOGIN_KEY = 'portfolio-open-project-form-after-login';
 
 const DEVICON_SLUGS = {
   arduino: 'arduino',
@@ -304,9 +310,9 @@ export default function App() {
       : 'Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env.local to publish projects.'
   );
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
+  const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(Boolean(oauthCallbackErrorMessage));
   const [isAdmin, setIsAdmin] = useState(false);
-  const [adminLoginError, setAdminLoginError] = useState('');
+  const [adminLoginError, setAdminLoginError] = useState(oauthCallbackErrorMessage);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [activeSideDrawer, setActiveSideDrawer] = useState(false);
   const [selectedTag, setSelectedTag] = useState("All");
@@ -337,6 +343,10 @@ export default function App() {
       return () => { isMounted = false; };
     }
 
+    if (oauthCallbackErrorMessage) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
     const projectChangesDuringLoad = new Map();
     const loadAdminStatus = async user => {
       if (!isMounted) return;
@@ -354,9 +364,24 @@ export default function App() {
       if (error) {
         setIsAdmin(false);
         setProjectStorageNotice(`Could not check admin access: ${error.message}`);
+        if (sessionStorage.getItem(PROJECT_FORM_AFTER_LOGIN_KEY) === 'true') {
+          setAdminLoginError(`Could not verify admin access: ${error.message}`);
+          setIsAdminLoginOpen(true);
+        }
         return;
       }
-      setIsAdmin(Boolean(data));
+      const hasAdminAccess = Boolean(data);
+      setIsAdmin(hasAdminAccess);
+      if (sessionStorage.getItem(PROJECT_FORM_AFTER_LOGIN_KEY) === 'true') {
+        sessionStorage.removeItem(PROJECT_FORM_AFTER_LOGIN_KEY);
+        if (hasAdminAccess) {
+          setIsAdminLoginOpen(false);
+          setIsModalOpen(true);
+        } else {
+          setAdminLoginError('This Google account is not configured as the portfolio administrator.');
+          setIsAdminLoginOpen(true);
+        }
+      }
     };
 
     supabase.auth.getSession()
@@ -369,7 +394,7 @@ export default function App() {
       });
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      loadAdminStatus(session?.user);
+      setTimeout(() => loadAdminStatus(session?.user), 0);
     });
 
     const projectChannel = supabase
@@ -594,8 +619,14 @@ export default function App() {
       setIsModalOpen(true);
       return;
     }
+    sessionStorage.setItem(PROJECT_FORM_AFTER_LOGIN_KEY, 'true');
     setAdminLoginError('');
     setIsAdminLoginOpen(true);
+  };
+
+  const handleCloseAdminLogin = () => {
+    sessionStorage.removeItem(PROJECT_FORM_AFTER_LOGIN_KEY);
+    setIsAdminLoginOpen(false);
   };
 
   const handleGoogleLogin = async () => {
@@ -692,7 +723,7 @@ export default function App() {
                 className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-medium shadow-md shadow-cyan-500/20 hover:shadow-cyan-500/40 hover:scale-[1.02] active:scale-[0.98] transition-all"
               >
                 {isAdmin ? <PlusCircle className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
-                {isAdmin ? 'Add Project' : 'Admin Login'}
+                Add Project
               </button>
               {isAdmin && (
                 <button onClick={handleAdminLogout} className="text-xs text-slate-400 hover:text-white">
@@ -767,7 +798,7 @@ export default function App() {
               className="w-full mt-2 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-medium shadow-md shadow-cyan-500/20"
             >
               {isAdmin ? <PlusCircle className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
-              {isAdmin ? 'Add New Project' : 'Admin Login'}
+              Add Project
             </button>
             {isAdmin && (
               <button onClick={handleAdminLogout} className="w-full py-2 text-sm text-slate-400 hover:text-white">
@@ -883,7 +914,7 @@ export default function App() {
                 className="px-7 py-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 font-semibold shadow-md hover:-translate-y-0.5 transition-all flex items-center gap-2"
               >
                 {isAdmin ? <PlusCircle className="w-5 h-5 text-cyan-400" /> : <LogIn className="w-5 h-5 text-cyan-400" />}
-                {isAdmin ? 'Add New Software Work' : 'Admin Login'}
+                Add Project
               </button>
             </div>
 
@@ -980,7 +1011,7 @@ export default function App() {
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 border border-cyan-500/40 text-cyan-400 font-medium hover:bg-cyan-500/10 transition shadow-lg shadow-cyan-500/5 self-start md:self-auto"
             >
               {isAdmin ? <PlusCircle className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
-              {isAdmin ? 'Add Project Link & Images' : 'Admin Login'}
+              Add Project
             </button>
           </div>
 
@@ -1349,12 +1380,12 @@ export default function App() {
               <h2 className="flex items-center gap-2 text-lg font-bold text-cyan-400">
                 <LogIn className="h-5 w-5" /> Portfolio Admin
               </h2>
-              <button type="button" onClick={() => setIsAdminLoginOpen(false)} className="text-slate-400 hover:text-white" aria-label="Close admin login">
+              <button type="button" onClick={handleCloseAdminLogin} className="text-slate-400 hover:text-white" aria-label="Close admin login">
                 <X className="h-5 w-5" />
               </button>
             </div>
             <p className="text-sm text-slate-400">
-              Sign in with the single Google account configured as this portfolio's administrator.
+              Sign in with the portfolio administrator's Google account to add, edit, or remove projects.
             </p>
             {adminLoginError && <p role="alert" className="text-sm text-red-400">{adminLoginError}</p>}
             <button type="button" onClick={handleGoogleLogin} className="w-full rounded-xl bg-cyan-500 px-4 py-2.5 font-bold text-slate-950 hover:bg-cyan-400">
