@@ -11,17 +11,6 @@ export const parseGitHubRepoUrl = link => {
   }
 };
 
-export const estimateStackUsage = tagsInput => {
-  const tags = Array.from(new Set(
-    tagsInput.split(',').map(tag => tag.trim()).filter(Boolean)
-  ));
-  if (!tags.length) return {};
-
-  const share = Math.floor(100 / tags.length);
-  const remainder = 100 - share * tags.length;
-  return Object.fromEntries(tags.map((tag, index) => [tag, share + (index < remainder ? 1 : 0)]));
-};
-
 export const calculateLanguagePercentages = languageBytes => {
   const entries = Object.entries(languageBytes || {})
     .filter(([, bytes]) => Number.isFinite(bytes) && bytes > 0);
@@ -49,4 +38,41 @@ export const calculateLanguagePercentages = languageBytes => {
     });
 
   return Object.fromEntries(percentages.map(({ language, percentage }) => [language, percentage]));
+};
+
+export const analyzeGitHubRepoLanguages = async (link, fetchImpl = fetch) => {
+  const repository = parseGitHubRepoUrl(link);
+  const unavailable = note => ({
+    stackUsage: null,
+    stackUsageSource: 'unavailable',
+    stackUsageNote: note
+  });
+
+  if (!repository) {
+    return unavailable('Add a valid public GitHub repository link to analyze its language breakdown.');
+  }
+
+  const repositoryPath = repository.split('/').map(encodeURIComponent).join('/');
+  try {
+    const response = await fetchImpl(`https://api.github.com/repos/${repositoryPath}/languages`, {
+      headers: { Accept: 'application/vnd.github+json' }
+    });
+    if (!response.ok) {
+      return unavailable(`GitHub returned ${response.status}; repository language data is unavailable.`);
+    }
+
+    const stackUsage = calculateLanguagePercentages(await response.json());
+    if (!stackUsage) {
+      return unavailable('GitHub reports no language data for this repository.');
+    }
+
+    return {
+      stackUsage,
+      stackUsageSource: 'github',
+      stackUsageNote: 'Calculated from GitHub repository language byte counts.'
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return unavailable(`Could not retrieve GitHub language data: ${detail}`);
+  }
 };

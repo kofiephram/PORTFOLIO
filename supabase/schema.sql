@@ -162,6 +162,22 @@ create policy "Portfolio admins can delete projects"
     )
   );
 
+do $$
+begin
+  if exists (
+    select 1 from pg_publication where pubname = 'supabase_realtime'
+  ) and not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'projects'
+  ) then
+    execute 'alter publication supabase_realtime add table public.projects';
+  end if;
+end
+$$;
+
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
   'portfolio-project-images',

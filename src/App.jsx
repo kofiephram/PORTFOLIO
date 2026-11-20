@@ -1,10 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
-import {
-  calculateLanguagePercentages,
-  estimateStackUsage,
-  parseGitHubRepoUrl
-} from './project-utils.js';
+import { analyzeGitHubRepoLanguages } from './project-utils.js';
 import { isSupabaseConfigured, PROJECT_IMAGES_BUCKET, supabase } from './supabase.js';
 import { 
   Code2, 
@@ -31,74 +27,7 @@ import {
   Phone
 } from 'lucide-react';
 
-// Initial pre-populated software engineering projects for Ephraim Kofi
-const INITIAL_PROJECTS = [
-  {
-    id: 1,
-    title: "Campus Hub - UZ Academic Portal",
-    description: "A centralized real-time platform designed for University of Zimbabwe students to access course materials, collaborate on group assignments, and receive department updates efficiently.",
-    link: "https://github.com/ephraimkofi/uz-campus-hub",
-    tags: ["React", "Node.js", "MongoDB", "Tailwind CSS"],
-    images: [
-      "https://images.unsplash.com/photo-1522071820081-009f0129c71c?auto=format&fit=crop&w=1000&q=80",
-      "https://images.unsplash.com/photo-1531403009284-440f080d1e12?auto=format&fit=crop&w=1000&q=80",
-      "https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&w=1000&q=80"
-    ]
-  },
-  {
-    id: 2,
-    title: "ZimMarketplace AI Engine",
-    description: "An intelligent e-commerce recommendation system built for local tech entrepreneurs, utilizing machine learning algorithms for customized product suggestions and inventory analytics.",
-    link: "https://github.com/ephraimkofi/zim-market-ai",
-    tags: ["Python", "FastAPI", "React", "PostgreSQL"],
-    images: [
-      "https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&w=1000&q=80",
-      "https://images.unsplash.com/photo-1556742049-0a67cf6004b1?auto=format&fit=crop&w=1000&q=80",
-      "https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?auto=format&fit=crop&w=1000&q=80"
-    ]
-  }
-];
-
-const analyzeProjectStack = async (project) => {
-  const estimatedUsage = estimateStackUsage((project.tags || []).join(','));
-  const repository = parseGitHubRepoUrl(project.link);
-  if (!repository) {
-    return {
-      stackUsage: estimatedUsage,
-      stackUsageSource: 'estimated',
-      stackUsageNote: 'Estimated evenly from the listed technologies. Add a public GitHub repository link to analyze code percentages.'
-    };
-  }
-
-  try {
-    const repositoryPath = repository.split('/').map(encodeURIComponent).join('/');
-    const response = await fetch(`https://api.github.com/repos/${repositoryPath}/languages`, {
-      headers: { Accept: 'application/vnd.github+json' }
-    });
-    if (!response.ok) throw new Error('GitHub language analysis failed.');
-
-    const stackUsage = calculateLanguagePercentages(await response.json());
-    if (stackUsage) {
-      return {
-        stackUsage,
-        stackUsageSource: 'github',
-        stackUsageNote: 'Calculated from the public GitHub repository language breakdown.'
-      };
-    }
-  } catch {
-    return {
-      stackUsage: estimatedUsage,
-      stackUsageSource: 'estimated',
-      stackUsageNote: 'The linked GitHub repository could not be analyzed. Percentages are estimated evenly from the listed technologies.'
-    };
-  }
-
-  return {
-    stackUsage: estimatedUsage,
-    stackUsageSource: 'estimated',
-    stackUsageNote: 'No language data was available. Percentages are estimated evenly from the listed technologies.'
-  };
-};
+const INITIAL_PROJECTS = [];
 
 const DEVICON_SLUGS = {
   arduino: 'arduino',
@@ -170,17 +99,36 @@ const StackTechIcon = ({ technology }) => {
   );
 };
 
-const mapSupabaseProject = project => ({
-  ...project,
-  imageCredits: project.image_credits || [],
-  imagePaths: project.image_paths || [],
-  isSupabaseProject: true
-});
+const mapSupabaseProject = project => {
+  const imagePaths = Array.isArray(project.image_paths) ? project.image_paths : [];
+  const storedImages = Array.isArray(project.images) && project.images.length
+    ? project.images
+    : imagePaths;
+  const images = storedImages
+    .filter(image => typeof image === 'string' && image.trim())
+    .map(image => /^https?:\/\//i.test(image)
+      ? image
+      : supabase.storage.from(PROJECT_IMAGES_BUCKET).getPublicUrl(image).data.publicUrl);
+
+  return {
+    ...project,
+    tags: Array.isArray(project.tags) ? project.tags : [],
+    images,
+    imageCredits: Array.isArray(project.image_credits) ? project.image_credits : [],
+    imagePaths,
+    isSupabaseProject: true
+  };
+};
+
+const sortProjectsByCreatedAt = projects => [...projects].sort(
+  (left, right) => (Date.parse(right.created_at) || 0) - (Date.parse(left.created_at) || 0)
+);
 
 const StackAnalysis = ({ project }) => {
   const stackUsage = project.stackUsage;
-  const tags = stackUsage ? Object.keys(stackUsage) : project.tags || [];
+  const tags = stackUsage ? Object.keys(stackUsage) : [];
   const hasPercentages = tags.length > 0 && tags.every(tag => Number.isFinite(stackUsage?.[tag]));
+  const isAnalysisUnavailable = project.stackUsageSource === 'unavailable';
 
   return (
     <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
@@ -188,31 +136,37 @@ const StackAnalysis = ({ project }) => {
         <div>
           <h3 className="text-sm font-semibold text-slate-100">Stack analysis</h3>
           <p className="mt-1 text-[11px] text-slate-500">
-            {project.stackUsageSource === 'github' ? 'Analyzed from GitHub' : 'Technology mix estimate'}
+            {project.stackUsageSource === 'github'
+              ? 'Language percentages from GitHub'
+              : isAnalysisUnavailable
+                ? 'GitHub language data unavailable'
+                : 'Fetching language data from GitHub'}
           </p>
         </div>
-        <div className="stack-orbit" aria-label={`${tags.length} technology icons orbiting`}>
-          <div className="stack-orbit-track" />
-          <div className="stack-orbit-center"><Layers className="h-5 w-5" /></div>
-          {tags.map((tag, index) => {
-            const angle = (index * 2 * Math.PI) / Math.max(tags.length, 1) - Math.PI / 2;
-            return (
-              <span
-                key={tag}
-                className="stack-orbit-icon"
-                style={{
-                  '--orbit-x': `${48 * Math.cos(angle)}px`,
-                  '--orbit-y': `${48 * Math.sin(angle)}px`,
-                  animationDelay: `-${index * (12 / Math.max(tags.length, 1))}s`
-                }}
-                title={tag}
-                aria-label={tag}
-              >
-                <StackTechIcon technology={tag} />
-              </span>
-            );
-          })}
-        </div>
+        {tags.length > 0 && (
+          <div className="stack-orbit" aria-label={`${tags.length} GitHub language icons orbiting`}>
+            <div className="stack-orbit-track" />
+            <div className="stack-orbit-center"><Layers className="h-5 w-5" /></div>
+            {tags.map((tag, index) => {
+              const angle = (index * 2 * Math.PI) / Math.max(tags.length, 1) - Math.PI / 2;
+              return (
+                <span
+                  key={tag}
+                  className="stack-orbit-icon"
+                  style={{
+                    '--orbit-x': `${48 * Math.cos(angle)}px`,
+                    '--orbit-y': `${48 * Math.sin(angle)}px`,
+                    animationDelay: `-${index * (12 / Math.max(tags.length, 1))}s`
+                  }}
+                  title={tag}
+                  aria-label={tag}
+                >
+                  <StackTechIcon technology={tag} />
+                </span>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {hasPercentages ? (
@@ -236,7 +190,11 @@ const StackAnalysis = ({ project }) => {
           })}
         </div>
       ) : (
-        <p className="mt-3 text-xs text-slate-500">Analyzing project stack...</p>
+        <p className="mt-3 text-xs text-slate-500">
+          {isAnalysisUnavailable
+            ? 'Percentages are hidden because GitHub language data is unavailable.'
+            : 'Fetching language percentages from GitHub...'}
+        </p>
       )}
       {project.stackUsageNote && (
         <p className="mt-3 text-[11px] text-slate-500">{project.stackUsageNote}</p>
@@ -249,9 +207,9 @@ const LiveDeveloperProfile = ({ projects }) => {
   const skillTotals = new Map();
 
   projects.forEach(project => {
-    const contributions = project.stackUsage
+    const contributions = project.stackUsageSource === 'github' && project.stackUsage
       ? Object.entries(project.stackUsage)
-      : (project.tags || []).map(tag => [tag, 1]);
+      : [];
 
     contributions.forEach(([skill, weight]) => {
       const current = skillTotals.get(skill) || { score: 0, projectCount: 0 };
@@ -278,7 +236,7 @@ const LiveDeveloperProfile = ({ projects }) => {
             Growing through project work
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
-            This profile updates from the technologies and repository language analysis of the projects shown above.
+            This profile updates only from GitHub language breakdowns for the projects shown above.
           </p>
           <div aria-live="polite" className="mt-4 flex flex-wrap gap-2 text-[11px]">
             <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-slate-300">
@@ -379,6 +337,7 @@ export default function App() {
       return () => { isMounted = false; };
     }
 
+    const projectChangesDuringLoad = new Map();
     const loadAdminStatus = async user => {
       if (!isMounted) return;
       if (!user) {
@@ -413,6 +372,36 @@ export default function App() {
       loadAdminStatus(session?.user);
     });
 
+    const projectChannel = supabase
+      .channel('portfolio-project-changes')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'projects'
+      }, payload => {
+        if (!isMounted) return;
+
+        if (payload.eventType === 'DELETE') {
+          if (payload.old?.id) projectChangesDuringLoad.set(payload.old.id, null);
+          setProjects(current => current.filter(project => project.id !== payload.old.id));
+          return;
+        }
+
+        if (payload.new?.id) {
+          const updatedProject = mapSupabaseProject(payload.new);
+          projectChangesDuringLoad.set(updatedProject.id, updatedProject);
+          setProjects(current => sortProjectsByCreatedAt([
+            updatedProject,
+            ...current.filter(project => project.id !== updatedProject.id)
+          ]));
+        }
+      })
+      .subscribe(status => {
+        if (isMounted && (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT')) {
+          setProjectStorageNotice(`Live Supabase project sync failed (${status}). Refresh to load the latest projects.`);
+        }
+      });
+
     supabase
       .from('projects')
       .select('*')
@@ -421,7 +410,15 @@ export default function App() {
         if (error) throw error;
         if (!isMounted) return;
         const savedProjects = (data || []).map(mapSupabaseProject);
-        setProjects([...savedProjects, ...INITIAL_PROJECTS]);
+        setProjects(current => {
+          const projectsById = new Map(savedProjects.map(project => [project.id, project]));
+          current.forEach(project => projectsById.set(project.id, project));
+          projectChangesDuringLoad.forEach((project, id) => {
+            if (project) projectsById.set(id, project);
+            else projectsById.delete(id);
+          });
+          return sortProjectsByCreatedAt([...projectsById.values(), ...INITIAL_PROJECTS]);
+        });
         setProjectStorageNotice('');
       })
       .catch(error => {
@@ -437,6 +434,7 @@ export default function App() {
     return () => {
       isMounted = false;
       authListener.subscription.unsubscribe();
+      supabase.removeChannel(projectChannel);
     };
   }, []);
 
@@ -450,7 +448,7 @@ export default function App() {
     projectsToAnalyze.forEach(project => projectAnalysisInProgress.current.add(project.id));
     Promise.all(projectsToAnalyze.map(async project => [
       project.id,
-      await analyzeProjectStack(project)
+      await analyzeGitHubRepoLanguages(project.link)
     ]))
       .then(analyses => {
         const analysisById = new Map(analyses);
@@ -565,7 +563,7 @@ export default function App() {
       if (error) throw error;
 
       const createdProject = mapSupabaseProject(data);
-      setProjects(prev => [createdProject, ...prev]);
+      setProjects(prev => sortProjectsByCreatedAt([createdProject, ...prev]));
       Object.values(newProject).forEach(value => {
         if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
       });
