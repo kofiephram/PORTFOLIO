@@ -29,7 +29,9 @@ import {
   LogIn,
   LogOut,
   UserPlus,
-  Phone
+  Phone,
+  Pencil,
+  AlertTriangle
 } from 'lucide-react';
 
 const INITIAL_PROJECTS = [];
@@ -319,6 +321,9 @@ export default function App() {
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [imageFileNames, setImageFileNames] = useState({});
   const [imageUploadError, setImageUploadError] = useState('');
+  const [editingProject, setEditingProject] = useState(null);
+  const [projectPendingDelete, setProjectPendingDelete] = useState(null);
+  const [isDeletingProject, setIsDeletingProject] = useState(false);
   const imageFileInputs = useRef({});
   const imageFiles = useRef({});
   const projectAnalysisInProgress = useRef(new Set());
@@ -510,6 +515,15 @@ export default function App() {
     setImageFileNames(prev => ({ ...prev, [field]: file.name }));
   };
 
+  const handleRemoveScreenshot = field => {
+    const preview = newProject[field];
+    if (preview?.startsWith('blob:')) URL.revokeObjectURL(preview);
+    delete imageFiles.current[field];
+    setNewProject(prev => ({ ...prev, [field]: '' }));
+    setImageFileNames(prev => ({ ...prev, [field]: '' }));
+    setImageUploadError('');
+  };
+
   const handleNextImage = (projectId, totalImages) => {
     setActiveImageIndices(prev => ({
       ...prev,
@@ -524,7 +538,7 @@ export default function App() {
     }));
   };
 
-  const handleAddProject = async (e) => {
+  const handleSaveProject = async (e) => {
     e.preventDefault();
     if (isAddingProject) return;
     if (!supabase || !isAdmin) {
@@ -543,10 +557,13 @@ export default function App() {
       setProjectStorageNotice('Add at least one technology to the project stack.');
       return;
     }
-    const files = ['img1', 'img2', 'img3']
-      .map(field => imageFiles.current[field])
-      .filter(Boolean);
-    if (!files.length) {
+    const filesByField = ['img1', 'img2', 'img3']
+      .map(field => ({ file: imageFiles.current[field] }))
+      .filter(({ file }) => Boolean(file));
+    const existingImages = ['img1', 'img2', 'img3']
+      .filter(field => /^https?:\/\//i.test(newProject[field]))
+      .map(field => newProject[field]);
+    if (!filesByField.length && !existingImages.length) {
       setImageUploadError('Upload at least one project screenshot to publish it permanently.');
       return;
     }
@@ -557,9 +574,9 @@ export default function App() {
     const uploadedPaths = [];
 
     try {
-      const projectId = crypto.randomUUID();
-      const images = [];
-      for (const file of files) {
+      const projectId = editingProject?.id || crypto.randomUUID();
+      const images = [...existingImages];
+      for (const { file } of filesByField) {
         const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
         const path = `${projectId}/${crypto.randomUUID()}-${safeFileName}`;
         const { error: uploadError } = await supabase.storage
@@ -571,30 +588,51 @@ export default function App() {
         const { data } = supabase.storage.from(PROJECT_IMAGES_BUCKET).getPublicUrl(path);
         images.push(data.publicUrl);
       }
+      const retainedExistingPaths = editingProject
+        ? ['img1', 'img2', 'img3']
+          .filter(field => /^https?:\/\//i.test(newProject[field]))
+          .map(field => {
+            const fieldIndex = ['img1', 'img2', 'img3'].indexOf(field);
+            return editingProject.imagePaths[fieldIndex];
+          })
+          .filter(Boolean)
+        : [];
+      const projectValues = {
+        title: newProject.title.trim(),
+        description: newProject.description.trim(),
+        link: newProject.link.trim(),
+        tags: tagArray,
+        images,
+        image_paths: [...retainedExistingPaths, ...uploadedPaths]
+      };
 
-      const { data, error } = await supabase
-        .from('projects')
-        .insert({
-          id: projectId,
-          title: newProject.title.trim(),
-          description: newProject.description.trim(),
-          link: newProject.link.trim(),
-          tags: tagArray,
-          images,
-          image_paths: uploadedPaths
-        })
-        .select()
-        .single();
+      const projectQuery = editingProject
+        ? supabase.from('projects').update(projectValues).eq('id', editingProject.id)
+        : supabase.from('projects').insert({ id: projectId, ...projectValues });
+      const { data, error } = await projectQuery.select().single();
       if (error) throw error;
 
-      const createdProject = mapSupabaseProject(data);
-      setProjects(prev => sortProjectsByCreatedAt([createdProject, ...prev]));
+      const savedProject = mapSupabaseProject(data);
+      setProjects(prev => editingProject
+        ? sortProjectsByCreatedAt([savedProject, ...prev.filter(project => project.id !== savedProject.id)])
+        : sortProjectsByCreatedAt([savedProject, ...prev]));
+
+      if (editingProject) {
+        const retainedPathSet = new Set(retainedExistingPaths);
+        const removedPaths = (editingProject.imagePaths || [])
+          .filter(path => !retainedPathSet.has(path));
+        if (removedPaths.length) {
+          await supabase.storage.from(PROJECT_IMAGES_BUCKET).remove(removedPaths);
+        }
+      }
+
       Object.values(newProject).forEach(value => {
         if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
       });
       imageFiles.current = {};
       setNewProject({ title: '', description: '', link: '', img1: '', img2: '', img3: '', tags: '' });
       setImageFileNames({});
+      setEditingProject(null);
       setIsModalOpen(false);
     } catch (error) {
       let cleanupNotice = '';
@@ -616,12 +654,35 @@ export default function App() {
       return;
     }
     if (isAdmin) {
+      setEditingProject(null);
+      resetProjectForm();
       setIsModalOpen(true);
       return;
     }
     sessionStorage.setItem(PROJECT_FORM_AFTER_LOGIN_KEY, 'true');
     setAdminLoginError('');
     setIsAdminLoginOpen(true);
+  };
+
+  const handleOpenProjectEditor = project => {
+    if (!isAdmin || !project.isSupabaseProject) return;
+    resetProjectForm();
+    setEditingProject(project);
+    setNewProject({
+      title: project.title,
+      description: project.description,
+      link: project.link || '',
+      img1: project.images[0] || '',
+      img2: project.images[1] || '',
+      img3: project.images[2] || '',
+      tags: project.tags.join(', ')
+    });
+    setImageFileNames({
+      img1: project.images[0] ? 'Existing screenshot 1' : '',
+      img2: project.images[1] ? 'Existing screenshot 2' : '',
+      img3: project.images[2] ? 'Existing screenshot 3' : ''
+    });
+    setIsModalOpen(true);
   };
 
   const handleCloseAdminLogin = () => {
@@ -655,10 +716,18 @@ export default function App() {
   };
 
   const handleDeleteProject = async project => {
+    setProjectPendingDelete(project);
+  };
+
+  const confirmDeleteProject = async () => {
+    const project = projectPendingDelete;
     if (!supabase || !isAdmin || !project.isSupabaseProject) return;
+    setIsDeletingProject(true);
     const { error } = await supabase.from('projects').delete().eq('id', project.id);
     if (error) {
       setProjectStorageNotice(`Could not delete the project: ${error.message}`);
+      setIsDeletingProject(false);
+      setProjectPendingDelete(null);
       return;
     }
 
@@ -669,10 +738,14 @@ export default function App() {
         .remove(project.imagePaths);
       if (storageError) {
         setProjectStorageNotice(`Project deleted, but its stored images could not be removed: ${storageError.message}`);
+        setIsDeletingProject(false);
+        setProjectPendingDelete(null);
         return;
       }
     }
     setProjectStorageNotice('');
+    setIsDeletingProject(false);
+    setProjectPendingDelete(null);
   };
 
   const resetProjectForm = () => {
@@ -683,7 +756,41 @@ export default function App() {
     setNewProject({ title: '', description: '', link: '', img1: '', img2: '', img3: '', tags: '' });
     setImageFileNames({});
     setImageUploadError('');
+    setEditingProject(null);
   };
+
+  useEffect(() => {
+    const hasOpenModal = isModalOpen || isAdminLoginOpen || Boolean(projectPendingDelete);
+    if (!hasOpenModal) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handleEscape = event => {
+      if (event.key !== 'Escape') return;
+      if (projectPendingDelete) {
+        setProjectPendingDelete(null);
+      } else if (isAdminLoginOpen) {
+        sessionStorage.removeItem(PROJECT_FORM_AFTER_LOGIN_KEY);
+        setIsAdminLoginOpen(false);
+      } else if (isModalOpen && !isAddingProject) {
+        Object.values(newProject).forEach(value => {
+          if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
+        });
+        imageFiles.current = {};
+        setNewProject({ title: '', description: '', link: '', img1: '', img2: '', img3: '', tags: '' });
+        setImageFileNames({});
+        setImageUploadError('');
+        setEditingProject(null);
+        setIsModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [isModalOpen, isAdminLoginOpen, projectPendingDelete, isAddingProject, newProject]);
 
   const allTags = ["All", ...Array.from(new Set(projects.flatMap(p => p.tags)))];
 
@@ -1034,6 +1141,30 @@ export default function App() {
             ))}
           </div>
 
+          {!isProjectsLoaded ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8" aria-label="Loading projects">
+              {[0, 1].map(index => (
+                <div key={index} className="animate-pulse overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60">
+                  <div className="aspect-video bg-slate-800" />
+                  <div className="space-y-3 p-6">
+                    <div className="h-5 w-2/3 rounded bg-slate-800" />
+                    <div className="h-3 w-full rounded bg-slate-800" />
+                    <div className="h-3 w-4/5 rounded bg-slate-800" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : filteredProjects.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-12 text-center">
+              <FolderGit2 className="mx-auto h-8 w-8 text-slate-600" />
+              <h3 className="mt-3 font-semibold text-slate-200">
+                {projects.length === 0 ? 'No projects published yet' : 'No projects match this technology'}
+              </h3>
+              <p className="mt-1 text-sm text-slate-500">
+                {projects.length === 0 ? 'The admin can publish the first project from the Add Project button.' : 'Choose another technology filter.'}
+              </p>
+            </div>
+          ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
             {filteredProjects.map((project) => {
               const currentImageIndex = activeImageIndices[project.id] || 0;
@@ -1069,13 +1200,24 @@ export default function App() {
 
                       <div className="absolute top-3 right-3 flex items-center gap-2">
                         {isAdmin && project.isSupabaseProject && (
-                          <button
-                            onClick={() => handleDeleteProject(project)}
-                            className="p-1.5 rounded-lg bg-slate-950/70 text-slate-400 hover:text-red-400 border border-slate-800 backdrop-blur-md transition"
-                            title="Delete Project"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          <>
+                            <button
+                              onClick={() => handleOpenProjectEditor(project)}
+                              className="p-1.5 rounded-lg bg-slate-950/70 text-slate-400 hover:text-cyan-400 border border-slate-800 backdrop-blur-md transition"
+                              title="Edit Project"
+                              aria-label={`Edit ${project.title}`}
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteProject(project)}
+                              className="p-1.5 rounded-lg bg-slate-950/70 text-slate-400 hover:text-red-400 border border-slate-800 backdrop-blur-md transition"
+                              title="Delete Project"
+                              aria-label={`Delete ${project.title}`}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
                         )}
                       </div>
 
@@ -1166,6 +1308,7 @@ export default function App() {
               );
             })}
           </div>
+          )}
         </section>
 
         {/* CONTACT SECTION */}
@@ -1230,11 +1373,16 @@ export default function App() {
       {/* ADD PROJECT MODAL */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl p-6 sm:p-8 space-y-6 shadow-2xl relative my-8">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="project-form-title"
+            className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl p-6 sm:p-8 space-y-6 shadow-2xl relative my-8"
+          >
             <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div className="flex items-center gap-2 text-cyan-400 font-bold text-lg">
+              <div id="project-form-title" className="flex items-center gap-2 text-cyan-400 font-bold text-lg">
                 <PlusCircle className="w-5 h-5" />
-                Add New Software Project
+                {editingProject ? 'Edit Software Project' : 'Add New Software Project'}
               </div>
               <button 
                 onClick={() => { resetProjectForm(); setIsModalOpen(false); }}
@@ -1249,7 +1397,7 @@ export default function App() {
               <p role="alert" className="text-sm text-amber-300">{projectStorageNotice}</p>
             )}
 
-            <form onSubmit={handleAddProject} className="space-y-4 text-left">
+            <form onSubmit={handleSaveProject} className="space-y-4 text-left">
               <div>
                 <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                   Project Title *
@@ -1324,7 +1472,18 @@ export default function App() {
                         <span className="truncate">{imageFileNames[field] || label}</span>
                       </button>
                       {newProject[field] && (
-                        <img src={newProject[field]} alt={`Preview ${index + 1}`} className="h-12 w-20 rounded-lg object-cover" />
+                        <div className="relative">
+                          <img src={newProject[field]} alt={`Preview ${index + 1}`} className="h-12 w-20 rounded-lg object-cover" />
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveScreenshot(field)}
+                            className="absolute -right-2 -top-2 rounded-full border border-slate-700 bg-slate-950 p-1 text-slate-300 hover:text-red-400"
+                            aria-label={`Remove image ${index + 1}`}
+                            title="Remove image"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -1365,10 +1524,53 @@ export default function App() {
                   disabled={isAddingProject || !isProjectsLoaded}
                   className="px-6 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-sm shadow-lg shadow-cyan-500/20 transition"
                 >
-                  {isAddingProject ? 'Uploading & publishing...' : 'Save & Publish Project'}
+                  {isAddingProject
+                    ? (editingProject ? 'Saving changes...' : 'Uploading & publishing...')
+                    : (editingProject ? 'Save Changes' : 'Save & Publish Project')}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {projectPendingDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-project-title"
+            className="w-full max-w-md rounded-2xl border border-red-500/20 bg-slate-900 p-6 shadow-2xl"
+          >
+            <div className="flex items-start gap-3">
+              <div className="rounded-lg bg-red-500/10 p-2 text-red-400">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div>
+                <h2 id="delete-project-title" className="font-bold text-white">Delete this project?</h2>
+                <p className="mt-2 text-sm text-slate-400">
+                  <strong className="text-slate-200">{projectPendingDelete.title}</strong> and its stored screenshots will be permanently removed.
+                </p>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setProjectPendingDelete(null)}
+                disabled={isDeletingProject}
+                className="rounded-xl bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteProject}
+                disabled={isDeletingProject}
+                className="rounded-xl bg-red-500 px-4 py-2 text-sm font-bold text-white hover:bg-red-400 disabled:opacity-50"
+              >
+                {isDeletingProject ? 'Deleting...' : 'Delete Project'}
+              </button>
+            </div>
           </div>
         </div>
       )}
