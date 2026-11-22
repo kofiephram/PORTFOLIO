@@ -40,16 +40,44 @@ export const calculateLanguagePercentages = languageBytes => {
   return Object.fromEntries(percentages.map(({ language, percentage }) => [language, percentage]));
 };
 
-export const analyzeGitHubRepoLanguages = async (link, fetchImpl = fetch) => {
+export const calculateTagPercentages = tags => {
+  const uniqueTags = [];
+  const seenTags = new Set();
+  for (const tag of Array.isArray(tags) ? tags : []) {
+    if (typeof tag !== 'string' || !tag.trim()) continue;
+    const trimmedTag = tag.trim();
+    const normalizedTag = trimmedTag.toLowerCase();
+    if (seenTags.has(normalizedTag)) continue;
+    seenTags.add(normalizedTag);
+    uniqueTags.push(trimmedTag);
+  }
+  if (!uniqueTags.length) return null;
+
+  const percentagePerTag = Math.floor(100 / uniqueTags.length);
+  let remainder = 100 - percentagePerTag * uniqueTags.length;
+  return Object.fromEntries(uniqueTags.map(tag => [
+    tag,
+    percentagePerTag + (remainder-- > 0 ? 1 : 0)
+  ]));
+};
+
+export const analyzeProjectStack = async (link, tags, fetchImpl = fetch) => {
+  const tagEstimate = calculateTagPercentages(tags);
+  const estimated = note => tagEstimate
+    ? {
+      stackUsage: tagEstimate,
+      stackUsageSource: 'tags',
+      stackUsageNote: `${note} Percentages are estimated evenly from the project tags.`
+    }
+    : {
+      stackUsage: null,
+      stackUsageSource: 'unavailable',
+      stackUsageNote: `${note} Add technology tags to provide an estimate.`
+    };
   const repository = parseGitHubRepoUrl(link);
-  const unavailable = note => ({
-    stackUsage: null,
-    stackUsageSource: 'unavailable',
-    stackUsageNote: note
-  });
 
   if (!repository) {
-    return unavailable('Add a valid public GitHub repository link to analyze its language breakdown.');
+    return estimated('No public GitHub repository was available.');
   }
 
   const repositoryPath = repository.split('/').map(encodeURIComponent).join('/');
@@ -58,12 +86,12 @@ export const analyzeGitHubRepoLanguages = async (link, fetchImpl = fetch) => {
       headers: { Accept: 'application/vnd.github+json' }
     });
     if (!response.ok) {
-      return unavailable(`GitHub returned ${response.status}; repository language data is unavailable.`);
+      return estimated(`GitHub returned ${response.status}; repository language data is unavailable.`);
     }
 
     const stackUsage = calculateLanguagePercentages(await response.json());
     if (!stackUsage) {
-      return unavailable('GitHub reports no language data for this repository.');
+      return estimated('GitHub reports no language data.');
     }
 
     return {
@@ -73,6 +101,6 @@ export const analyzeGitHubRepoLanguages = async (link, fetchImpl = fetch) => {
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    return unavailable(`Could not retrieve GitHub language data: ${detail}`);
+    return estimated(`Could not retrieve GitHub language data (${detail}).`);
   }
 };

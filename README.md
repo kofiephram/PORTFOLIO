@@ -21,6 +21,8 @@ The portfolio uses Supabase as the shared source of truth for projects and image
 
 Visitors can read project details and images without signing in. The configured admin signs in with Google from **Admin Login** to publish or delete projects from the website.
 
+Each project card shows language percentages from GitHub when a public repository is available. If GitHub language data cannot be retrieved, the card shows a clearly labeled even estimate from the project's required technology tags. The footer summarizes the technology tags across all projects, with each percentage representing the share of projects using that technology.
+
 ## Managing projects in Supabase
 
 Use the same project fields whether posting from the website or the Supabase dashboard:

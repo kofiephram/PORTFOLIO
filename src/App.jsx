@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { analyzeGitHubRepoLanguages } from './project-utils.js';
+import { analyzeProjectStack } from './project-utils.js';
 import {
   isSupabaseConfigured,
   oauthCallbackErrorMessage,
@@ -146,13 +146,15 @@ const StackAnalysis = ({ project }) => {
           <p className="mt-1 text-[11px] text-slate-500">
             {project.stackUsageSource === 'github'
               ? 'Language percentages from GitHub'
-              : isAnalysisUnavailable
-                ? 'GitHub language data unavailable'
-                : 'Fetching language data from GitHub'}
+              : project.stackUsageSource === 'tags'
+                ? 'Estimated from declared project technologies'
+                : isAnalysisUnavailable
+                  ? 'Stack analysis unavailable'
+                  : 'Analyzing project stack'}
           </p>
         </div>
         {tags.length > 0 && (
-          <div className="stack-orbit" aria-label={`${tags.length} GitHub language icons orbiting`}>
+          <div className="stack-orbit" aria-label={`${tags.length} project technology icons orbiting`}>
             <div className="stack-orbit-track" />
             <div className="stack-orbit-center"><Layers className="h-5 w-5" /></div>
             {tags.map((tag, index) => {
@@ -200,8 +202,8 @@ const StackAnalysis = ({ project }) => {
       ) : (
         <p className="mt-3 text-xs text-slate-500">
           {isAnalysisUnavailable
-            ? 'Percentages are hidden because GitHub language data is unavailable.'
-            : 'Fetching language percentages from GitHub...'}
+            ? 'Percentages are unavailable until project technology tags are added.'
+            : 'Analyzing project stack...'}
         </p>
       )}
       {project.stackUsageNote && (
@@ -211,92 +213,118 @@ const StackAnalysis = ({ project }) => {
   );
 };
 
-const LiveDeveloperProfile = ({ projects }) => {
-  const skillTotals = new Map();
+const OverallStackAnalysis = ({ projects }) => {
+  const technologyTotals = new Map();
 
   projects.forEach(project => {
-    const contributions = project.stackUsageSource === 'github' && project.stackUsage
-      ? Object.entries(project.stackUsage)
-      : [];
+    const projectTechnologies = new Set(
+      (Array.isArray(project.tags) ? project.tags : [])
+        .filter(tag => typeof tag === 'string' && tag.trim())
+        .map(tag => tag.trim())
+    );
+    const normalizedTechnologies = new Set(
+      [...projectTechnologies].map(technology => technology.toLowerCase())
+    );
 
-    contributions.forEach(([skill, weight]) => {
-      const current = skillTotals.get(skill) || { score: 0, projectCount: 0 };
-      current.score += Number.isFinite(weight) ? weight : 1;
+    normalizedTechnologies.forEach(normalizedTechnology => {
+      const name = [...projectTechnologies].find(
+        technology => technology.toLowerCase() === normalizedTechnology
+      );
+      const current = technologyTotals.get(normalizedTechnology) || {
+        name,
+        projectCount: 0
+      };
       current.projectCount += 1;
-      skillTotals.set(skill, current);
+      technologyTotals.set(normalizedTechnology, current);
     });
   });
 
-  const profileSkills = Array.from(skillTotals.entries())
-    .sort((left, right) => right[1].score - left[1].score)
-    .slice(0, 6);
-  const maxSkillScore = Math.max(1, ...profileSkills.map(([, data]) => data.score));
-  const analyzedProjects = projects.filter(project => project.stackUsageSource === 'github').length;
+  const technologies = Array.from(technologyTotals.values())
+    .sort((left, right) => right.projectCount - left.projectCount || left.name.localeCompare(right.name));
+  const orbitTechnologies = technologies.slice(0, 6);
+  const githubAnalyzedProjects = projects.filter(project => project.stackUsageSource === 'github').length;
 
   return (
-    <section aria-labelledby="live-profile-title" className="mx-auto mt-10 max-w-7xl border-t border-slate-800 pt-8">
+    <section aria-labelledby="overall-stack-title" className="mx-auto mt-10 max-w-7xl border-t border-slate-800 pt-8">
       <div className="grid items-center gap-8 rounded-2xl border border-slate-800 bg-slate-900/50 p-6 sm:p-8 lg:grid-cols-[1fr_auto]">
         <div>
           <div className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-cyan-400">
-            <Sparkles className="h-3.5 w-3.5" /> Live developer profile
+            <Sparkles className="h-3.5 w-3.5" /> Portfolio technology overview
           </div>
-          <h2 id="live-profile-title" className="mt-3 text-xl font-bold text-white">
-            Growing through project work
+          <h2 id="overall-stack-title" className="mt-3 text-xl font-bold text-white">
+            Overall stack analysis
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
-            This profile updates only from GitHub language breakdowns for the projects shown above.
+            Technology coverage across all projects. Percentages show the share of projects tagged with each technology.
           </p>
           <div aria-live="polite" className="mt-4 flex flex-wrap gap-2 text-[11px]">
             <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-slate-300">
-              {projects.length} projects tracked
+              {projects.length} total projects
             </span>
             <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-slate-300">
-              {analyzedProjects} GitHub analyses
+              {technologies.length} distinct technologies
+            </span>
+            <span className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-slate-300">
+              {githubAnalyzedProjects} GitHub language analyses
             </span>
           </div>
 
-          <div className="mt-5 grid gap-x-8 gap-y-3 sm:grid-cols-2">
-            {profileSkills.map(([skill, data]) => {
-              const signal = Math.round((data.score / maxSkillScore) * 100);
-              return (
-                <div key={skill}>
-                  <div className="mb-1 flex items-center justify-between gap-3 text-xs">
-                    <span className="truncate text-slate-300">{skill}</span>
-                    <span className="shrink-0 text-slate-500">{data.projectCount} project{data.projectCount === 1 ? '' : 's'}</span>
+          {technologies.length > 0 ? (
+            <div className="mt-5 grid gap-x-8 gap-y-3 sm:grid-cols-2">
+              {technologies.map(technology => {
+                const coverage = projects.length
+                  ? Math.round((technology.projectCount / projects.length) * 100)
+                  : 0;
+                return (
+                  <div key={technology.name}>
+                    <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                      <span className="truncate text-slate-300">{technology.name}</span>
+                      <span className="shrink-0 text-slate-500">
+                        {technology.projectCount}/{projects.length} projects · {coverage}%
+                      </span>
+                    </div>
+                    <div
+                      className="h-1.5 overflow-hidden rounded-full bg-slate-800"
+                      role="img"
+                      aria-label={`${technology.name} appears in ${coverage}% of projects`}
+                    >
+                      <div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-indigo-400" style={{ width: `${coverage}%` }} />
+                    </div>
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
-                    <div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-indigo-400" style={{ width: `${signal}%` }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="mt-5 text-sm text-slate-500">
+              Add technology tags to projects to build the overall stack analysis.
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col items-center gap-3">
-          <div className="stack-orbit" aria-label={`${profileSkills.length} project technologies orbiting`}>
+          <div className="stack-orbit" aria-label={`${orbitTechnologies.length} most common project technologies orbiting`}>
             <div className="stack-orbit-track" />
             <div className="stack-orbit-center"><Code2 className="h-5 w-5" /></div>
-            {profileSkills.map(([skill], index) => {
-              const angle = (index * 2 * Math.PI) / Math.max(profileSkills.length, 1) - Math.PI / 2;
+            {orbitTechnologies.map((technology, index) => {
+              const angle = (index * 2 * Math.PI) / Math.max(orbitTechnologies.length, 1) - Math.PI / 2;
               return (
                 <span
-                  key={skill}
+                  key={technology.name}
                   className="stack-orbit-icon"
                   style={{
                     '--orbit-x': `${48 * Math.cos(angle)}px`,
                     '--orbit-y': `${48 * Math.sin(angle)}px`,
-                    animationDelay: `-${index * (12 / Math.max(profileSkills.length, 1))}s`
+                    animationDelay: `-${index * (12 / Math.max(orbitTechnologies.length, 1))}s`
                   }}
-                  title={skill}
-                  aria-label={skill}
+                  title={technology.name}
+                  aria-label={technology.name}
                 >
-                  <StackTechIcon technology={skill} />
+                  <StackTechIcon technology={technology.name} />
                 </span>
               );
             })}
           </div>
-          <span className="text-[10px] uppercase tracking-wider text-slate-500">Project-powered skill orbit</span>
+          <span className="text-[10px] uppercase tracking-wider text-slate-500">Most common technologies</span>
         </div>
       </div>
     </section>
@@ -478,7 +506,7 @@ export default function App() {
     projectsToAnalyze.forEach(project => projectAnalysisInProgress.current.add(project.id));
     Promise.all(projectsToAnalyze.map(async project => [
       project.id,
-      await analyzeGitHubRepoLanguages(project.link)
+      await analyzeProjectStack(project.link, project.tags)
     ]))
       .then(analyses => {
         const analysisById = new Map(analyses);
@@ -1367,7 +1395,7 @@ export default function App() {
             <a href="tel:+263777536989" className="hover:text-cyan-400 transition">Call</a>
           </div>
         </div>
-        <LiveDeveloperProfile projects={projects} />
+        <OverallStackAnalysis projects={projects} />
       </footer>
 
       {/* ADD PROJECT MODAL */}

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  analyzeGitHubRepoLanguages,
+  analyzeProjectStack,
   calculateLanguagePercentages,
+  calculateTagPercentages,
   parseGitHubRepoUrl
 } from './project-utils.js';
 
@@ -34,7 +35,21 @@ describe('calculateLanguagePercentages', () => {
   });
 });
 
-describe('analyzeGitHubRepoLanguages', () => {
+describe('calculateTagPercentages', () => {
+  it('distributes estimates evenly across unique non-empty technology tags', () => {
+    const result = calculateTagPercentages(['React', ' Python ', 'react', '', 'Node.js']);
+
+    expect(result).toEqual({ React: 34, Python: 33, 'Node.js': 33 });
+    expect(Object.values(result).reduce((sum, value) => sum + value, 0)).toBe(100);
+  });
+
+  it('returns null when no usable technology tags are provided', () => {
+    expect(calculateTagPercentages([])).toBeNull();
+    expect(calculateTagPercentages([' ', null])).toBeNull();
+  });
+});
+
+describe('analyzeProjectStack', () => {
   it('uses repository language byte counts from GitHub', async () => {
     const fetchImpl = async url => {
       expect(url).toBe('https://api.github.com/repos/example/project/languages');
@@ -44,7 +59,7 @@ describe('analyzeGitHubRepoLanguages', () => {
       };
     };
 
-    await expect(analyzeGitHubRepoLanguages('https://github.com/example/project', fetchImpl))
+    await expect(analyzeProjectStack('https://github.com/example/project', ['React'], fetchImpl))
       .resolves.toEqual({
         stackUsage: { JavaScript: 75, CSS: 25 },
         stackUsageSource: 'github',
@@ -52,28 +67,48 @@ describe('analyzeGitHubRepoLanguages', () => {
       });
   });
 
-  it('does not provide percentages when GitHub has no language data', async () => {
+  it('estimates the stack from tags when there is no public GitHub repository', async () => {
+    await expect(analyzeProjectStack('https://example.com/project', ['React', 'Node.js']))
+      .resolves.toEqual({
+        stackUsage: { React: 50, 'Node.js': 50 },
+        stackUsageSource: 'tags',
+        stackUsageNote: 'No public GitHub repository was available. Percentages are estimated evenly from the project tags.'
+      });
+  });
+
+  it('uses tag estimates when GitHub has no language data', async () => {
     const fetchImpl = async () => ({
       ok: true,
       json: async () => ({})
     });
 
-    await expect(analyzeGitHubRepoLanguages('https://github.com/example/project', fetchImpl))
+    await expect(analyzeProjectStack('https://github.com/example/project', ['Python', 'FastAPI'], fetchImpl))
       .resolves.toEqual({
-        stackUsage: null,
-        stackUsageSource: 'unavailable',
-        stackUsageNote: 'GitHub reports no language data for this repository.'
+        stackUsage: { Python: 50, FastAPI: 50 },
+        stackUsageSource: 'tags',
+        stackUsageNote: 'GitHub reports no language data. Percentages are estimated evenly from the project tags.'
       });
   });
 
-  it('reports request failures without estimating from tags', async () => {
+  it('uses a visible tag estimate when GitHub request fails', async () => {
     const fetchImpl = async () => ({ ok: false, status: 403 });
 
-    await expect(analyzeGitHubRepoLanguages('https://github.com/example/project', fetchImpl))
+    await expect(analyzeProjectStack('https://github.com/example/project', ['React', 'CSS'], fetchImpl))
+      .resolves.toEqual({
+        stackUsage: { React: 50, CSS: 50 },
+        stackUsageSource: 'tags',
+        stackUsageNote: 'GitHub returned 403; repository language data is unavailable. Percentages are estimated evenly from the project tags.'
+      });
+  });
+
+  it('reports unavailable analysis when neither GitHub data nor tags are available', async () => {
+    const fetchImpl = async () => ({ ok: false, status: 403 });
+
+    await expect(analyzeProjectStack('https://github.com/example/project', [], fetchImpl))
       .resolves.toEqual({
         stackUsage: null,
         stackUsageSource: 'unavailable',
-        stackUsageNote: 'GitHub returned 403; repository language data is unavailable.'
+        stackUsageNote: 'GitHub returned 403; repository language data is unavailable. Add technology tags to provide an estimate.'
       });
   });
 });
