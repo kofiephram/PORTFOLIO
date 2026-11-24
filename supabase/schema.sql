@@ -93,12 +93,28 @@ create table if not exists public.projects (
   title text not null,
   description text not null,
   link text not null default '',
+  repo_url text not null default '',
+  demo_url text not null default '',
   tags text[] not null default '{}',
   images text[] not null default '{}',
   image_paths text[] not null default '{}',
   image_credits jsonb not null default '[]',
   created_at timestamptz not null default now()
 );
+
+alter table public.projects add column if not exists repo_url text not null default '';
+alter table public.projects add column if not exists demo_url text not null default '';
+
+update public.projects
+set repo_url = link
+where repo_url = ''
+  and link ~* '^https?://(www\.)?github\.com/';
+
+update public.projects
+set demo_url = link
+where demo_url = ''
+  and nullif(link, '') is not null
+  and link !~* '^https?://(www\.)?github\.com/';
 
 alter table public.projects enable row level security;
 revoke all on public.projects from anon, authenticated;
@@ -251,3 +267,50 @@ create policy "Portfolio admins can delete project images"
         and (select auth.jwt() -> 'app_metadata' ->> 'provider') = 'google'
     )
   );
+
+create table if not exists public.tech_chat_rate_limits (
+  client_hash text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists tech_chat_rate_limits_client_created_idx
+  on public.tech_chat_rate_limits (client_hash, created_at desc);
+
+alter table public.tech_chat_rate_limits enable row level security;
+revoke all on public.tech_chat_rate_limits from public, anon, authenticated;
+grant all on public.tech_chat_rate_limits to service_role;
+
+create or replace function public.consume_tech_chat_quota(p_client_hash text)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  recent_request_count integer;
+begin
+  if length(p_client_hash) <> 64 then
+    raise exception 'Invalid client hash';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_client_hash, 0));
+  delete from public.tech_chat_rate_limits
+  where created_at < now() - interval '10 minutes';
+
+  select count(*)
+    into recent_request_count
+    from public.tech_chat_rate_limits
+    where client_hash = p_client_hash
+      and created_at >= now() - interval '10 minutes';
+
+  if recent_request_count >= 12 then
+    return false;
+  end if;
+
+  insert into public.tech_chat_rate_limits (client_hash) values (p_client_hash);
+  return true;
+end
+$$;
+
+revoke all on function public.consume_tech_chat_quota(text) from public, anon, authenticated;
+grant execute on function public.consume_tech_chat_quota(text) to service_role;

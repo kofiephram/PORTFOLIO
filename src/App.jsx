@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { analyzeProjectStack } from './project-utils.js';
+import { fetchGitHubProject } from './github-import.js';
 import {
   isSupabaseConfigured,
   oauthCallbackErrorMessage,
@@ -31,7 +32,11 @@ import {
   UserPlus,
   Phone,
   Pencil,
-  AlertTriangle
+  AlertTriangle,
+  LoaderCircle,
+  MessageCircle,
+  Send,
+  Bot
 } from 'lucide-react';
 
 const INITIAL_PROJECTS = [];
@@ -108,6 +113,8 @@ const StackTechIcon = ({ technology }) => {
 };
 
 const mapSupabaseProject = project => {
+  const legacyLink = typeof project.link === 'string' ? project.link : '';
+  const legacyLinkIsRepository = /^https?:\/\/(www\.)?github\.com\//i.test(legacyLink);
   const imagePaths = Array.isArray(project.image_paths) ? project.image_paths : [];
   const storedImages = Array.isArray(project.images) && project.images.length
     ? project.images
@@ -120,6 +127,8 @@ const mapSupabaseProject = project => {
 
   return {
     ...project,
+    repoUrl: project.repo_url || (legacyLinkIsRepository ? legacyLink : ''),
+    demoUrl: project.demo_url || (legacyLink && !legacyLinkIsRepository ? legacyLink : ''),
     tags: Array.isArray(project.tags) ? project.tags : [],
     images,
     imageCredits: Array.isArray(project.image_credits) ? project.image_credits : [],
@@ -352,6 +361,16 @@ export default function App() {
   const [editingProject, setEditingProject] = useState(null);
   const [projectPendingDelete, setProjectPendingDelete] = useState(null);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
+  const [githubImportUrl, setGithubImportUrl] = useState('');
+  const [githubImportError, setGithubImportError] = useState('');
+  const [githubImportNote, setGithubImportNote] = useState('');
+  const [githubImageCandidates, setGithubImageCandidates] = useState([]);
+  const [isImportingGithub, setIsImportingGithub] = useState(false);
+  const [chatIsOpen, setChatIsOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatQuestion, setChatQuestion] = useState('');
+  const [isSendingChatMessage, setIsSendingChatMessage] = useState(false);
+  const [chatError, setChatError] = useState('');
   const imageFileInputs = useRef({});
   const imageFiles = useRef({});
   const projectAnalysisInProgress = useRef(new Set());
@@ -360,7 +379,8 @@ export default function App() {
   const [newProject, setNewProject] = useState({
     title: '',
     description: '',
-    link: '',
+    repoUrl: '',
+    demoUrl: '',
     img1: '',
     img2: '',
     img3: '',
@@ -506,7 +526,7 @@ export default function App() {
     projectsToAnalyze.forEach(project => projectAnalysisInProgress.current.add(project.id));
     Promise.all(projectsToAnalyze.map(async project => [
       project.id,
-      await analyzeProjectStack(project.link, project.tags)
+      await analyzeProjectStack(project.repoUrl || project.link, project.tags)
     ]))
       .then(analyses => {
         const analysisById = new Map(analyses);
@@ -549,6 +569,79 @@ export default function App() {
     delete imageFiles.current[field];
     setNewProject(prev => ({ ...prev, [field]: '' }));
     setImageFileNames(prev => ({ ...prev, [field]: '' }));
+    setImageUploadError('');
+  };
+
+  const handleImportGitHubProject = async event => {
+    event.preventDefault();
+    if (isImportingGithub || editingProject) return;
+
+    setIsImportingGithub(true);
+    setGithubImportError('');
+    setGithubImportNote('');
+    try {
+      const importedProject = await fetchGitHubProject(githubImportUrl);
+      Object.values(newProject).forEach(value => {
+        if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
+      });
+      imageFiles.current = {};
+      const candidates = importedProject.imageCandidates;
+      setNewProject({
+        title: importedProject.title,
+        description: importedProject.description,
+        repoUrl: importedProject.repoUrl,
+        demoUrl: importedProject.demoUrl,
+        img1: candidates[0]?.url || '',
+        img2: candidates[1]?.url || '',
+        img3: candidates[2]?.url || '',
+        tags: importedProject.tags.join(', ')
+      });
+      setImageFileNames({
+        img1: candidates[0] ? `GitHub: ${candidates[0].name}` : '',
+        img2: candidates[1] ? `GitHub: ${candidates[1].name}` : '',
+        img3: candidates[2] ? `GitHub: ${candidates[2].name}` : ''
+      });
+      setGithubImageCandidates(candidates);
+      setImageUploadError('');
+      setGithubImportNote([
+        `Imported repository details and detected ${candidates.length} candidate image${candidates.length === 1 ? '' : 's'}.`,
+        candidates.length ? 'The highest-ranked images were added to the screenshot slots.' : 'Upload screenshots manually before publishing.',
+        importedProject.note
+      ].filter(Boolean).join(' '));
+    } catch (error) {
+      setGithubImportError(error instanceof Error ? error.message : 'Could not import this GitHub repository.');
+    } finally {
+      setIsImportingGithub(false);
+    }
+  };
+
+  const handleUseGitHubImage = (field, candidateUrl) => {
+    if (!candidateUrl) {
+      handleRemoveScreenshot(field);
+      return;
+    }
+    const candidate = githubImageCandidates.find(image => image.url === candidateUrl);
+    if (!candidate) return;
+
+    const previousPreview = newProject[field];
+    if (previousPreview?.startsWith('blob:')) URL.revokeObjectURL(previousPreview);
+    delete imageFiles.current[field];
+    const duplicateFields = ['img1', 'img2', 'img3']
+      .filter(otherField => otherField !== field && newProject[otherField] === candidate.url);
+    duplicateFields.forEach(otherField => {
+      delete imageFiles.current[otherField];
+      if (newProject[otherField]?.startsWith('blob:')) URL.revokeObjectURL(newProject[otherField]);
+    });
+    setNewProject(previous => ({
+      ...previous,
+      ...Object.fromEntries(duplicateFields.map(otherField => [otherField, ''])),
+      [field]: candidate.url
+    }));
+    setImageFileNames(previous => ({
+      ...previous,
+      ...Object.fromEntries(duplicateFields.map(otherField => [otherField, ''])),
+      [field]: `GitHub: ${candidate.name}`
+    }));
     setImageUploadError('');
   };
 
@@ -617,18 +710,21 @@ export default function App() {
         images.push(data.publicUrl);
       }
       const retainedExistingPaths = editingProject
-        ? ['img1', 'img2', 'img3']
-          .filter(field => /^https?:\/\//i.test(newProject[field]))
-          .map(field => {
-            const fieldIndex = ['img1', 'img2', 'img3'].indexOf(field);
-            return editingProject.imagePaths[fieldIndex];
+        ? (editingProject.imagePaths || [])
+          .filter(path => {
+            const publicUrl = supabase.storage
+              .from(PROJECT_IMAGES_BUCKET)
+              .getPublicUrl(path).data.publicUrl;
+            return existingImages.includes(publicUrl);
           })
           .filter(Boolean)
         : [];
       const projectValues = {
         title: newProject.title.trim(),
         description: newProject.description.trim(),
-        link: newProject.link.trim(),
+        link: newProject.repoUrl.trim() || newProject.demoUrl.trim(),
+        repo_url: newProject.repoUrl.trim(),
+        demo_url: newProject.demoUrl.trim(),
         tags: tagArray,
         images,
         image_paths: [...retainedExistingPaths, ...uploadedPaths]
@@ -658,8 +754,12 @@ export default function App() {
         if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
       });
       imageFiles.current = {};
-      setNewProject({ title: '', description: '', link: '', img1: '', img2: '', img3: '', tags: '' });
+      setNewProject({ title: '', description: '', repoUrl: '', demoUrl: '', img1: '', img2: '', img3: '', tags: '' });
       setImageFileNames({});
+      setGithubImportUrl('');
+      setGithubImportError('');
+      setGithubImportNote('');
+      setGithubImageCandidates([]);
       setEditingProject(null);
       setIsModalOpen(false);
     } catch (error) {
@@ -699,7 +799,8 @@ export default function App() {
     setNewProject({
       title: project.title,
       description: project.description,
-      link: project.link || '',
+      repoUrl: project.repoUrl || '',
+      demoUrl: project.demoUrl || '',
       img1: project.images[0] || '',
       img2: project.images[1] || '',
       img3: project.images[2] || '',
@@ -710,6 +811,10 @@ export default function App() {
       img2: project.images[1] ? 'Existing screenshot 2' : '',
       img3: project.images[2] ? 'Existing screenshot 3' : ''
     });
+    setGithubImageCandidates([]);
+    setGithubImportUrl(project.repoUrl || '');
+    setGithubImportNote('');
+    setGithubImportError('');
     setIsModalOpen(true);
   };
 
@@ -741,6 +846,40 @@ export default function App() {
       return;
     }
     setIsAdmin(false);
+  };
+
+  const handleSendTechQuestion = async event => {
+    event.preventDefault();
+    const question = chatQuestion.trim();
+    if (!question || isSendingChatMessage || !supabase) return;
+
+    const conversation = [...chatMessages, { role: 'user', content: question }].slice(-12);
+    setChatMessages(conversation);
+    setChatQuestion('');
+    setChatError('');
+    setIsSendingChatMessage(true);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('tech-chat', {
+        body: { messages: conversation }
+      });
+      if (error) {
+        let message = error.message || 'The assistant could not answer right now.';
+        if (error.context && typeof error.context.clone === 'function') {
+          const failure = await error.context.clone().json().catch(() => null);
+          if (typeof failure?.error === 'string') message = failure.error;
+        }
+        throw new Error(message);
+      }
+      if (typeof data?.answer !== 'string' || !data.answer.trim()) {
+        throw new Error('The assistant returned an empty answer. Please try again.');
+      }
+      setChatMessages(previous => [...previous, { role: 'assistant', content: data.answer.trim() }].slice(-12));
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'The assistant could not answer right now.');
+    } finally {
+      setIsSendingChatMessage(false);
+    }
   };
 
   const handleDeleteProject = async project => {
@@ -781,10 +920,14 @@ export default function App() {
       if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
     });
     imageFiles.current = {};
-    setNewProject({ title: '', description: '', link: '', img1: '', img2: '', img3: '', tags: '' });
+    setNewProject({ title: '', description: '', repoUrl: '', demoUrl: '', img1: '', img2: '', img3: '', tags: '' });
     setImageFileNames({});
     setImageUploadError('');
     setEditingProject(null);
+    setGithubImportUrl('');
+    setGithubImportError('');
+    setGithubImportNote('');
+    setGithubImageCandidates([]);
   };
 
   useEffect(() => {
@@ -805,10 +948,14 @@ export default function App() {
           if (typeof value === 'string' && value.startsWith('blob:')) URL.revokeObjectURL(value);
         });
         imageFiles.current = {};
-        setNewProject({ title: '', description: '', link: '', img1: '', img2: '', img3: '', tags: '' });
+        setNewProject({ title: '', description: '', repoUrl: '', demoUrl: '', img1: '', img2: '', img3: '', tags: '' });
         setImageFileNames({});
         setImageUploadError('');
         setEditingProject(null);
+        setGithubImportUrl('');
+        setGithubImportError('');
+        setGithubImportNote('');
+        setGithubImageCandidates([]);
         setIsModalOpen(false);
       }
     };
@@ -1284,17 +1431,32 @@ export default function App() {
                         <h3 className="text-xl font-bold text-white group-hover:text-cyan-400 transition">
                           {project.title}
                         </h3>
-                        {project.link && project.link !== "#" && (
-                          <a 
-                            href={project.link} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-cyan-400 transition flex-shrink-0"
-                            title="Open Project Link"
-                          >
-                            <ExternalLink className="w-4 h-4" />
-                          </a>
-                        )}
+                        <div className="flex shrink-0 items-center gap-2">
+                          {project.repoUrl && (
+                            <a
+                              href={project.repoUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="rounded-lg bg-slate-800/80 p-2 text-slate-300 transition hover:bg-slate-800 hover:text-cyan-400"
+                              title="Open GitHub repository"
+                              aria-label={`Open ${project.title} GitHub repository`}
+                            >
+                              <FolderGit2 className="h-4 w-4" />
+                            </a>
+                          )}
+                          {project.demoUrl && (
+                            <a
+                              href={project.demoUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="rounded-lg bg-slate-800/80 p-2 text-slate-300 transition hover:bg-slate-800 hover:text-cyan-400"
+                              title="Open live project"
+                              aria-label={`Open ${project.title} live demo`}
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          )}
+                        </div>
                       </div>
 
                       <p className="text-slate-400 text-sm leading-relaxed">
@@ -1319,18 +1481,31 @@ export default function App() {
                     <span className="flex items-center gap-1 text-slate-500">
                       <Globe className="w-3.5 h-3.5" /> Web Application
                     </span>
-                    {project.link && project.link !== "#" ? (
-                      <a 
-                        href={project.link} 
-                        target="_blank" 
-                        rel="noopener noreferrer" 
-                        className="text-cyan-400 hover:underline flex items-center gap-1 font-medium"
-                      >
-                        Visit Website <ExternalLink className="w-3 h-3" />
-                      </a>
-                    ) : (
-                      <span className="text-slate-600 italic">No external link provided</span>
-                    )}
+                    <div className="flex flex-wrap justify-end gap-3">
+                      {project.demoUrl && (
+                        <a
+                          href={project.demoUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 font-medium text-cyan-400 hover:underline"
+                        >
+                          Live Demo <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                      {project.repoUrl && (
+                        <a
+                          href={project.repoUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 font-medium text-slate-400 hover:text-cyan-400 hover:underline"
+                        >
+                          Source Code <FolderGit2 className="h-3 w-3" />
+                        </a>
+                      )}
+                      {!project.demoUrl && !project.repoUrl && (
+                        <span className="text-slate-600 italic">No external link provided</span>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -1426,6 +1601,40 @@ export default function App() {
             )}
 
             <form onSubmit={handleSaveProject} className="space-y-4 text-left">
+              {!editingProject && (
+                <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                  <label htmlFor="github-import-url" className="block text-xs font-semibold uppercase tracking-wider text-slate-300">
+                    Import from public GitHub
+                  </label>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input
+                      id="github-import-url"
+                      type="url"
+                      placeholder="https://github.com/owner/repository"
+                      value={githubImportUrl}
+                      onChange={event => setGithubImportUrl(event.target.value)}
+                      className="min-w-0 flex-1 rounded-xl border border-slate-800 bg-slate-900 px-4 py-2.5 text-sm text-slate-100 placeholder-slate-600 transition focus:border-cyan-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleImportGitHubProject}
+                      disabled={isImportingGithub || !githubImportUrl.trim()}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-semibold text-cyan-300 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isImportingGithub
+                        ? <LoaderCircle className="h-4 w-4 animate-spin" />
+                        : <FolderGit2 className="h-4 w-4" />}
+                      {isImportingGithub ? 'Importing...' : 'Import Repository'}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Public repositories only. Project details, languages, topics, homepage, and likely screenshots will be detected; review and edit before publishing.
+                  </p>
+                  {githubImportError && <p role="alert" className="text-xs text-red-400">{githubImportError}</p>}
+                  {githubImportNote && <p role="status" className="text-xs text-emerald-300">{githubImportNote}</p>}
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                   Project Title *
@@ -1442,13 +1651,26 @@ export default function App() {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                  Project Website / Repository Link
+                  GitHub Repository URL
                 </label>
-                <input 
-                  type="url" 
+                <input
+                  type="url"
                   placeholder="https://github.com/ephraimkofi/my-project"
-                  value={newProject.link}
-                  onChange={(e) => setNewProject({...newProject, link: e.target.value})}
+                  value={newProject.repoUrl}
+                  onChange={event => setNewProject({ ...newProject, repoUrl: event.target.value })}
+                  className="w-full rounded-xl border border-slate-800 bg-slate-950 px-4 py-2.5 text-sm text-slate-100 placeholder-slate-600 transition focus:border-cyan-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-300">
+                  Live Project URL (Vercel or other host)
+                </label>
+                <input
+                  type="url"
+                  placeholder="https://my-project.vercel.app"
+                  value={newProject.demoUrl}
+                  onChange={event => setNewProject({ ...newProject, demoUrl: event.target.value })}
                   className="w-full px-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500 text-sm transition"
                 />
               </div>
@@ -1472,8 +1694,49 @@ export default function App() {
                   Project Preview Screenshots (1 to 3 images) *
                 </label>
                 <p className="text-[11px] text-slate-500">
-                  Selected images are uploaded to Supabase Storage. JPG, PNG, WebP, or GIF; maximum 5 MB each.
+                  GitHub-detected images are linked from the public repository. Local uploads are saved to Supabase Storage. JPG, PNG, WebP, or GIF; maximum 5 MB each.
                 </p>
+                {githubImageCandidates.length > 0 && (
+                  <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+                    <p className="text-xs font-semibold text-slate-300">Detected repository images</p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {githubImageCandidates.slice(0, 6).map(candidate => {
+                        const selectedField = ['img1', 'img2', 'img3']
+                          .find(field => newProject[field] === candidate.url) || '';
+                        return (
+                          <div key={candidate.path} className="flex min-w-0 items-center gap-3 rounded-lg border border-slate-800 p-2">
+                            <img
+                              src={candidate.url}
+                              alt={`Detected ${candidate.name}`}
+                              className="h-12 w-16 shrink-0 rounded object-cover"
+                              loading="lazy"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-[11px] text-slate-300" title={candidate.path}>{candidate.path}</p>
+                              <select
+                                aria-label={`Choose which screenshot slot uses ${candidate.name}`}
+                                value={selectedField}
+                                onChange={event => {
+                                  const nextField = event.target.value;
+                                  if (selectedField && selectedField !== nextField) {
+                                    handleUseGitHubImage(selectedField, '');
+                                  }
+                                  if (nextField) handleUseGitHubImage(nextField, candidate.url);
+                                }}
+                                className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-200"
+                              >
+                                <option value="">Not selected</option>
+                                <option value="img1">Use as screenshot 1</option>
+                                <option value="img2">Use as screenshot 2</option>
+                                <option value="img3">Use as screenshot 3</option>
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 {[
                   { field: 'img1', label: 'Choose primary screenshot' },
                   { field: 'img2', label: 'Choose feature preview' },
@@ -1624,6 +1887,103 @@ export default function App() {
           </div>
         </div>
       )}
+
+      <div className="fixed bottom-4 right-4 z-40">
+        {chatIsOpen && (
+          <section
+            id="tech-chat-panel"
+            role="dialog"
+            aria-modal="false"
+            aria-labelledby="tech-chat-title"
+            className="mb-3 flex h-[min(34rem,calc(100vh-7rem))] w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
+          >
+            <header className="flex items-center justify-between border-b border-slate-800 bg-slate-950/70 px-4 py-3">
+              <div>
+                <h2 id="tech-chat-title" className="flex items-center gap-2 font-semibold text-cyan-300">
+                  <Bot className="h-5 w-5" /> Technical Q&A
+                </h2>
+                <p className="mt-1 text-[11px] text-slate-500">Programming, software, databases, cloud, networking, and IT support.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setChatIsOpen(false)}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-white"
+                aria-label="Close technical Q&A"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+
+            <div className="flex-1 space-y-3 overflow-y-auto p-4" role="log" aria-live="polite">
+              {chatMessages.length === 0 && (
+                <p className="max-w-[90%] rounded-2xl rounded-tl-sm bg-slate-800 px-3 py-2 text-sm text-slate-300">
+                  Ask a technology question. I can help with programming, software engineering, databases, cloud, networking, and IT support.
+                </p>
+              )}
+              {chatMessages.map((message, index) => (
+                <p
+                  key={`${message.role}-${index}`}
+                  className={`max-w-[90%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm ${
+                    message.role === 'user'
+                      ? 'ml-auto rounded-tr-sm bg-cyan-500/15 text-cyan-100'
+                      : 'rounded-tl-sm bg-slate-800 text-slate-300'
+                  }`}
+                >
+                  {message.content}
+                </p>
+              ))}
+              {isSendingChatMessage && (
+                <p className="flex items-center gap-2 text-xs text-slate-400">
+                  <LoaderCircle className="h-4 w-4 animate-spin" /> Preparing a technical answer...
+                </p>
+              )}
+              {!supabase && (
+                <p role="status" className="text-xs text-amber-300">
+                  Technical chat requires the Supabase project configuration.
+                </p>
+              )}
+              {chatError && <p role="alert" className="text-xs text-red-300">{chatError}</p>}
+            </div>
+
+            <form onSubmit={handleSendTechQuestion} className="border-t border-slate-800 p-3">
+              <label htmlFor="tech-chat-question" className="sr-only">Ask a technology question</label>
+              <div className="flex items-end gap-2">
+                <textarea
+                  id="tech-chat-question"
+                  rows={2}
+                  maxLength={1600}
+                  value={chatQuestion}
+                  onChange={event => setChatQuestion(event.target.value)}
+                  placeholder="Ask a technical question..."
+                  disabled={!supabase || isSendingChatMessage}
+                  className="max-h-28 min-h-11 flex-1 resize-y rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:border-cyan-500 focus:outline-none disabled:opacity-50"
+                />
+                <button
+                  type="submit"
+                  disabled={!supabase || isSendingChatMessage || !chatQuestion.trim()}
+                  className="rounded-xl bg-cyan-500 p-3 text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="Send technical question"
+                >
+                  <Send className="h-4 w-4" />
+                </button>
+              </div>
+              <p className="mt-2 text-[10px] text-slate-500">
+                Technology questions only. Limited to 12 requests per 10 minutes per network.
+              </p>
+            </form>
+          </section>
+        )}
+        <button
+          type="button"
+          onClick={() => setChatIsOpen(open => !open)}
+          className="ml-auto flex items-center gap-2 rounded-full bg-cyan-500 px-4 py-3 font-semibold text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-400"
+          aria-expanded={chatIsOpen}
+          aria-controls="tech-chat-panel"
+        >
+          {chatIsOpen ? <X className="h-5 w-5" /> : <MessageCircle className="h-5 w-5" />}
+          <span>{chatIsOpen ? 'Close chat' : 'Ask a tech question'}</span>
+        </button>
+      </div>
     </div>
   );
 }
